@@ -1,0 +1,77 @@
+# Build the gateway image, push it to Google Artifact Registry and deploy it to Cloud Run.
+# Run it by hand from the Actions tab.
+#
+# What you set up once (see docs/22-deploy-cloud.md):
+#   * a Postgres database Cloud Run can reach (Cloud SQL, Neon, Supabase, ...)
+#   * these secrets in Secret Manager: sethucms-vault-key, sethucms-cursor-secret,
+#     sethucms-preview-secret, sethucms-admin-token, sethucms-state-url
+#   * Workload Identity Federation, so GitHub deploys without a stored key
+#   * an Artifact Registry Docker repository
+# Repository variables: GCP_PROJECT, GCP_REGION, GCP_WIF_PROVIDER, GCP_DEPLOY_SA, GCP_REPO,
+#   SETHUCMS_PUBLIC_URL (the https address people will use), SETHUCMS_OWNER (if the sibling repos have another owner)
+#
+# Why these flags: with shared state the gateway keeps nothing on disk (SETHUCMS_DATA_DIR=memory).
+# The built-in worker sends webhooks, which needs CPU outside requests and one instance that stays
+# running (--no-cpu-throttling, --min-instances 1). Rate limits are per instance, so with up to 4
+# instances the effective limit is up to 4 times the configured one.
+# To keep the service private, remove --allow-unauthenticated and put your own access layer in front.
+#
+# Status: written but never run against a real Google Cloud project.
+name: deploy-cloud-run
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+concurrency: deploy-cloud-run
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: production        # add required reviewers to this environment in GitHub settings
+    env:
+      OWNER: ${{ vars.SETHUCMS_OWNER || github.repository_owner }}
+      IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/${{ vars.GCP_REPO }}/sethucms:${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: sethucms, persist-credentials: false }
+      - uses: actions/checkout@v4
+        with: { repository: "${{ env.OWNER }}/sethucms-adapter-sdk", path: sethucms-adapter-sdk, persist-credentials: false }
+      - uses: actions/checkout@v4
+        with: { repository: "${{ env.OWNER }}/sethucms-adapters", path: sethucms-adapters, persist-credentials: false }
+      - uses: actions/checkout@v4
+        with: { repository: "${{ env.OWNER }}/sethucms-admin", path: sethucms-admin, persist-credentials: false }
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - run: gcloud auth configure-docker "${{ vars.GCP_REGION }}-docker.pkg.dev" --quiet
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: sethucms/docker/Dockerfile.gateway
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.IMAGE }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Deploy
+        run: |
+          set -euo pipefail
+          gcloud run deploy sethucms \
+            --project "${{ vars.GCP_PROJECT }}" --region "${{ vars.GCP_REGION }}" \
+            --image "$IMAGE" \
+            --port 8080 \
+            --min-instances 1 --max-instances 4 \
+            --no-cpu-throttling \
+            --concurrency 80 --timeout 3600 \
+            --set-env-vars "NODE_ENV=production,SETHUCMS_DATA_DIR=memory,SETHUCMS_PUBLIC_URL=${{ vars.SETHUCMS_PUBLIC_URL }}" \
+            --set-secrets "SETHUCMS_VAULT_KEY=sethucms-vault-key:latest,SETHUCMS_CURSOR_SECRET=sethucms-cursor-secret:latest,SETHUCMS_PREVIEW_SECRET=sethucms-preview-secret:latest,SETHUCMS_ADMIN_TOKEN=sethucms-admin-token:latest,SETHUCMS_STATE_URL=sethucms-state-url:latest" \
+            --allow-unauthenticated
+      - name: Check it is up
+        run: |
+          set -euo pipefail
+          url=$(gcloud run services describe sethucms --project "${{ vars.GCP_PROJECT }}" --region "${{ vars.GCP_REGION }}" --format 'value(status.url)')
+          curl --fail --silent --show-error --retry 5 --retry-delay 5 --retry-connrefused "$url/v1/ready"

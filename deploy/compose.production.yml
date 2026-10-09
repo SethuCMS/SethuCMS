@@ -1,0 +1,63 @@
+# SethuCMS on one server: Postgres (shared state), the gateway, an optional separate worker, and Caddy for HTTPS.
+# Put this next to a .env file (copy compose.env.example). Start: docker compose --env-file .env -f compose.production.yml up -d
+# Add the standalone worker with:  --profile worker   (also set SETHUCMS_WORKER=off for the gateway in .env)
+#
+# Status: written but never run.
+name: sethucms
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: sethucms
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: sethucms
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sethucms"]
+      interval: 5s
+      retries: 10
+  gateway:
+    image: ${SETHUCMS_IMAGE:?set SETHUCMS_IMAGE}
+    restart: unless-stopped
+    depends_on: { postgres: { condition: service_healthy } }
+    ports: ["127.0.0.1:8080:8080"]      # Caddy reaches it on the compose network; the host port is for health checks
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      SETHUCMS_DATA_DIR: memory
+      SETHUCMS_STATE_URL: postgres://sethucms:${POSTGRES_PASSWORD}@postgres:5432/sethucms
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+  worker:
+    profiles: [worker]
+    image: ${SETHUCMS_IMAGE:?set SETHUCMS_IMAGE}
+    restart: unless-stopped
+    depends_on: { postgres: { condition: service_healthy } }
+    command: ["node", "dist/src/worker.js"]
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      SETHUCMS_DATA_DIR: memory
+      SETHUCMS_STATE_URL: postgres://sethucms:${POSTGRES_PASSWORD}@postgres:5432/sethucms
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on: [gateway]
+    ports: ["80:80", "443:443"]
+    environment:
+      SETHUCMS_DOMAIN: ${SETHUCMS_DOMAIN:?set SETHUCMS_DOMAIN in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+volumes:
+  pgdata:
+  caddy-data:
+  caddy-config:

@@ -1,0 +1,7 @@
+**/.git
+**/node_modules/.cache
+**/.sethucms-data
+**/.env
+**/.env.*
+!**/.env.example
+**/coverage

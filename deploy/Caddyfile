@@ -1,0 +1,9 @@
+# Caddy gets and renews the HTTPS certificate for SETHUCMS_DOMAIN by itself.
+# The domain must already point at this server, and ports 80 and 443 must be open.
+{$SETHUCMS_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy gateway:8080 {
+		# Live events are a long-lived response: send them through right away.
+		flush_interval -1
+	}
+}

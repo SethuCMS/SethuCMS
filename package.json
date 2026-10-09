@@ -1,0 +1,17 @@
+{
+  "name": "sethucms",
+  "private": true,
+  "version": "0.0.0",
+  "description": "SethuCMS - one CMS for every database",
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "build:all": "sh scripts/build-all.sh",
+    "start": "sh scripts/run-local.sh"
+  }
+}

@@ -1,0 +1,56 @@
+# Deploy to your own server (a VPS) with Docker Compose over SSH. Run it by hand from the Actions tab.
+#
+# The server needs Docker with the compose plugin, and a folder /opt/sethucms that holds a .env file
+# you wrote there yourself (secrets never pass through GitHub; copy deploy/compose.env.example).
+# Repository secrets: DEPLOY_SSH_KEY (a key that can log in as DEPLOY_USER only),
+#   DEPLOY_KNOWN_HOSTS (the output of `ssh-keyscan -t ed25519 your.host`, checked by you once).
+# Repository variables: DEPLOY_HOST, DEPLOY_USER.
+# The image comes from GHCR; run release-image (push a v* tag) first, then give that version here.
+#
+# Status: written but never run against a real server.
+name: deploy-vps-compose
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Image version to deploy, for example 0.1.0
+        required: true
+permissions:
+  contents: read
+concurrency: deploy-vps
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+        with: { sparse-checkout: sethucms/deploy, path: src, persist-credentials: false }
+      - name: Set up SSH (host key is pinned, never trusted on first use)
+        env:
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_deploy && chmod 600 ~/.ssh/id_deploy
+          printf '%s\n' "$KNOWN" > ~/.ssh/known_hosts
+      - name: Copy the compose files
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/id_deploy -o StrictHostKeyChecking=yes \
+            src/sethucms/deploy/compose.production.yml src/sethucms/deploy/Caddyfile \
+            "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}:/opt/sethucms/"
+      - name: Pull and restart
+        env:
+          VERSION: ${{ inputs.version }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$'; then echo "bad version" >&2; exit 1; fi
+          ssh -i ~/.ssh/id_deploy -o StrictHostKeyChecking=yes "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}" \
+            "cd /opt/sethucms && SETHUCMS_IMAGE=ghcr.io/$(printf '%s' "$OWNER" | tr A-Z a-z)/sethucms:$VERSION docker compose -f compose.production.yml --env-file .env pull && SETHUCMS_IMAGE=ghcr.io/$(printf '%s' "$OWNER" | tr A-Z a-z)/sethucms:$VERSION docker compose -f compose.production.yml --env-file .env up -d --remove-orphans"
+      - name: Check it is up
+        run: |
+          ssh -i ~/.ssh/id_deploy -o StrictHostKeyChecking=yes "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}" \
+            "for i in 1 2 3 4 5 6; do curl -fsS http://127.0.0.1:8080/v1/ready && exit 0; sleep 5; done; exit 1"

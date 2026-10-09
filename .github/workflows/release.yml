@@ -1,0 +1,90 @@
+name: Release
+
+# Publishes the gateway (with the admin app inside) as a container image.
+# Run it by pushing a tag such as v0.1.0, or by hand from the Actions tab.
+# Repositories link to each other by folder until the packages are published,
+# so this workflow checks the related repositories out next to this one.
+# They are public by default. If any are private, add a repository secret
+# CROSS_REPO_TOKEN (a token with read access to the sethucms repositories).
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/sethucms
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Check out this repository
+        uses: actions/checkout@v4
+        with:
+          path: sethucms
+      - name: Check out sethucms-adapter-sdk
+        uses: actions/checkout@v4
+        with:
+          repository: sethucms/sethucms-adapter-sdk
+          path: sethucms-adapter-sdk
+          token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+      - name: Check out sethucms-adapters
+        uses: actions/checkout@v4
+        with:
+          repository: sethucms/sethucms-adapters
+          path: sethucms-adapters
+          token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+      - name: Check out sethucms-admin
+        uses: actions/checkout@v4
+        with:
+          repository: sethucms/sethucms-admin
+          path: sethucms-admin
+          token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=long
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: sethucms/docker/Dockerfile.gateway
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: true
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Scan the image
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ env.IMAGE }}:sha-${{ github.sha }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "0"   # informational at first; change to "1" once findings are triaged
+      - name: GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          body: |
+            Container image: `${{ env.IMAGE }}:${{ github.ref_name }}`
+
+            Run it with the three secrets from `apps/api/.env.example` and a volume on `/data`.

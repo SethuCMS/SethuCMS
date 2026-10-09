@@ -1,0 +1,45 @@
+# syntax=docker/dockerfile:1.7
+# SethuCMS gateway with the admin app inside: one image, one port.
+#
+# The build context is the folder that holds all four repositories side by side
+# (they link to each other by folder until the packages are published):
+#   sethucms  sethucms-adapter-sdk  sethucms-adapters  sethucms-admin
+#
+#   cd ~    # the folder that contains the four repositories
+#   docker build -f sethucms/docker/Dockerfile.gateway -t sethucms .
+#
+# Run (production mode needs the three secrets and an admin token, see apps/api/.env.example):
+#   docker run -p 8080:8080 -v sethucms-data:/data \
+#     -e SETHUCMS_VAULT_KEY=... -e SETHUCMS_CURSOR_SECRET=... -e SETHUCMS_PREVIEW_SECRET=... \
+#     -e SETHUCMS_ADMIN_TOKEN=... sethucms
+
+FROM node:22-bookworm-slim AS build
+ENV PNPM_HOME=/pnpm PATH=/pnpm:$PATH
+RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
+WORKDIR /w
+COPY sethucms ./sethucms
+COPY sethucms-adapter-sdk ./sethucms-adapter-sdk
+COPY sethucms-adapters ./sethucms-adapters
+COPY sethucms-admin ./sethucms-admin
+# Same steps, same order, as scripts/build-all.sh
+RUN cd sethucms && pnpm install --no-frozen-lockfile && pnpm --filter @sethucms/core build \
+ && cd ../sethucms-adapter-sdk && pnpm install --no-frozen-lockfile && pnpm build \
+ && cd ../sethucms-adapters && pnpm install --no-frozen-lockfile && pnpm -r build \
+ && cd ../sethucms && pnpm install --no-frozen-lockfile && pnpm --filter @sethucms/api build \
+ && cd ../sethucms-admin && pnpm install --no-frozen-lockfile && pnpm build:embedded
+
+FROM node:22-bookworm-slim AS runtime
+# The folders keep the same paths as in the build stage so the folder links still resolve.
+COPY --from=build --chown=node:node /w /w
+RUN mkdir /data && chown node:node /data
+USER node
+ENV NODE_ENV=production \
+    PORT=8080 \
+    SETHUCMS_DATA_DIR=/data \
+    SETHUCMS_ADMIN_DIR=/w/sethucms-admin/dist
+WORKDIR /w/sethucms/apps/api
+VOLUME /data
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s \
+  CMD node -e "fetch('http://127.0.0.1:'+process.env.PORT+'/v1/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+CMD ["node", "dist/src/main.js"]

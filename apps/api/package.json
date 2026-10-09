@@ -1,0 +1,31 @@
+{
+  "name": "@sethucms/api",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The SethuCMS gateway: one HTTP API in front of every connected database",
+  "type": "module",
+  "main": "./dist/src/main.js",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/src/main.js",
+    "test": "tsc -p tsconfig.json && node --test dist/tests/*.test.js"
+  },
+  "dependencies": {
+    "@sethucms/adapter-memory": "link:../../../sethucms-adapters/packages/memory",
+    "@sethucms/adapter-mongodb": "link:../../../sethucms-adapters/packages/mongodb",
+    "@sethucms/adapter-mysql": "link:../../../sethucms-adapters/packages/mysql",
+    "@sethucms/adapter-firestore": "link:../../../sethucms-adapters/packages/firestore",
+    "@sethucms/adapter-postgres": "link:../../../sethucms-adapters/packages/postgres",
+    "@sethucms/adapter-sqlite": "link:../../../sethucms-adapters/packages/sqlite",
+    "@sethucms/adapter-sdk": "link:../../../sethucms-adapter-sdk",
+    "@sethucms/core": "workspace:*",
+    "pg": "^8.13.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  },
+  "license": "MIT"
+}

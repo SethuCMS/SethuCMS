@@ -1,0 +1,147 @@
+name: CI
+# Repositories link to each other by folder until the packages are published,
+# so this workflow checks the related repositories out next to this one.
+# They are public by default. If any are private, add a repository secret
+# CROSS_REPO_TOKEN (a token with read access to the sethucms repositories).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Core and gateway (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22]
+    steps:
+      - name: Check out this repository
+        uses: actions/checkout@v4
+        with:
+          path: sethucms
+      - name: Check out sethucms-adapter-sdk
+        uses: actions/checkout@v4
+        with:
+          repository: sethucms/sethucms-adapter-sdk
+          path: sethucms-adapter-sdk
+          token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+      - name: Check out sethucms-adapters
+        uses: actions/checkout@v4
+        with:
+          repository: sethucms/sethucms-adapters
+          path: sethucms-adapters
+          token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Build core
+        run: pnpm install --no-frozen-lockfile && pnpm --filter @sethucms/core build
+        working-directory: sethucms
+      - name: Build adapter SDK
+        run: pnpm install --no-frozen-lockfile && pnpm build
+        working-directory: sethucms-adapter-sdk
+      - name: Build adapters
+        run: pnpm install --no-frozen-lockfile && pnpm -r build
+        working-directory: sethucms-adapters
+      - name: Install gateway dependencies
+        run: pnpm install --no-frozen-lockfile
+        working-directory: sethucms
+      - run: pnpm typecheck
+        working-directory: sethucms
+      - run: pnpm build
+        working-directory: sethucms
+      - run: pnpm test
+        working-directory: sethucms
+
+  postgres:
+    name: Gateway against live PostgreSQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      SETHUCMS_TEST_PG_HOST: 127.0.0.1
+      SETHUCMS_TEST_PG_PORT: "5432"
+      SETHUCMS_TEST_PG_USER: postgres
+      SETHUCMS_TEST_PG_PASSWORD: test
+      SETHUCMS_TEST_PG_DB: postgres
+    steps:
+      - name: Check out this repository
+        uses: actions/checkout@v4
+        with:
+          path: sethucms
+      - name: Check out sethucms-adapter-sdk
+        uses: actions/checkout@v4
+        with:
+          repository: sethucms/sethucms-adapter-sdk
+          path: sethucms-adapter-sdk
+          token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+      - name: Check out sethucms-adapters
+        uses: actions/checkout@v4
+        with:
+          repository: sethucms/sethucms-adapters
+          path: sethucms-adapters
+          token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: pnpm install --no-frozen-lockfile && pnpm --filter @sethucms/core build
+        working-directory: sethucms
+      - run: pnpm install --no-frozen-lockfile && pnpm build
+        working-directory: sethucms-adapter-sdk
+      - run: pnpm install --no-frozen-lockfile && pnpm -r build
+        working-directory: sethucms-adapters
+      - run: pnpm install --no-frozen-lockfile
+        working-directory: sethucms
+      - run: pnpm --filter @sethucms/api test
+        working-directory: sethucms
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+      # Reports known vulnerable runtime dependencies. Informational until findings are triaged.
+      - run: pnpm audit --prod --audit-level high
+        continue-on-error: true
+
+  # Single required check for branch protection.
+  ci-ok:
+    name: CI OK
+    if: always()
+    needs: [test, postgres]
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          [ "${{ needs.test.result }}" = "success" ] && [ "${{ needs.postgres.result }}" = "success" ]

@@ -1,0 +1,28 @@
+# A local try-out of SethuCMS. NOT for production: it runs in development mode,
+# listens on your own machine only, and makes its own secrets in the "sethucms-demo"
+# volume. For real use follow docs/15-deploy-production.md instead.
+#
+#   cd ~    # the folder that holds sethucms, sethucms-adapter-sdk, sethucms-adapters, sethucms-admin
+#   docker compose -f sethucms/docker/compose.demo.yml up --build
+#
+# The first start prints your admin token once. Look for "ADMIN TOKEN" in the output,
+# copy it, then open http://127.0.0.1:8080
+#
+# Status: written to match the Dockerfile, but this file has not been run yet.
+name: sethucms-demo
+services:
+  sethucms:
+    build:
+      context: ../..
+      dockerfile: sethucms/docker/Dockerfile.gateway
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      NODE_ENV: development          # the image sets production; the demo needs generated secrets
+      HOST: 0.0.0.0                  # inside the container; the port above is still local-only
+      SETHUCMS_SQLITE_DIR: /data/sqlite
+      SETHUCMS_SEED_DEMO: "true"
+    volumes:
+      - sethucms-demo:/data
+volumes:
+  sethucms-demo:
