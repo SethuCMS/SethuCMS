@@ -25,23 +25,23 @@ jobs:
     timeout-minutes: 40
     steps:
       - name: Check out this repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: sethucms
       - name: Check out sethucms-adapter-sdk
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: SethuCMS/adapter-sdk
           path: sethucms-adapter-sdk
           token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
       - name: Check out sethucms-adapters
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: SethuCMS/adapters
           path: sethucms-adapters
           token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
       - name: Check out sethucms-admin
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: SethuCMS/admin
           path: sethucms-admin

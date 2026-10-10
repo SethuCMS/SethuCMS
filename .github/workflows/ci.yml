@@ -27,17 +27,17 @@ jobs:
         node: [20, 22]
     steps:
       - name: Check out this repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: sethucms
       - name: Check out sethucms-adapter-sdk
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: SethuCMS/adapter-sdk
           path: sethucms-adapter-sdk
           token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
       - name: Check out sethucms-adapters
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: SethuCMS/adapters
           path: sethucms-adapters
@@ -91,17 +91,17 @@ jobs:
       SETHUCMS_TEST_PG_DB: postgres
     steps:
       - name: Check out this repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: sethucms
       - name: Check out sethucms-adapter-sdk
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: SethuCMS/adapter-sdk
           path: sethucms-adapter-sdk
           token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
       - name: Check out sethucms-adapters
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: SethuCMS/adapters
           path: sethucms-adapters
@@ -128,7 +128,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v4
         with:
           version: 9.15.0
