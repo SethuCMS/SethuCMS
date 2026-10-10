@@ -20,6 +20,7 @@
     "@sethucms/adapter-postgres": "link:../../../sethucms-adapters/packages/postgres",
     "@sethucms/adapter-sqlite": "link:../../../sethucms-adapters/packages/sqlite",
     "@sethucms/adapter-sdk": "link:../../../sethucms-adapter-sdk",
+    "@google-cloud/firestore": "^7.10.0",
     "@sethucms/core": "workspace:*",
     "pg": "^8.13.0"
   },

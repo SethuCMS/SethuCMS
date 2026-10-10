@@ -133,6 +133,16 @@ A new adapter is one entry there plus a package from `sethucms-adapters`.
   allow-listed egress (see `sethucms-infra`) for strong isolation.
 - **Adapters run in this process**, except `grpc` connections, which talk to a separate adapter service (doc 23).
 - **Several gateways** share state through PostgreSQL (`SETHUCMS_STATE_URL`, doc 22). Rate limits stay per gateway.
+- **State in Firestore** (one gateway): set `SETHUCMS_FIRESTORE_PROJECT` and the gateway keeps its connections, tokens, drafts, audit log and change feed in your Firestore instead of files. A lease in the database refuses a second gateway; a crashed gateway's lease expires after 30 seconds. Secrets (`SETHUCMS_VAULT_KEY`, `SETHUCMS_CURSOR_SECRET`, `SETHUCMS_PREVIEW_SECRET`, `SETHUCMS_ADMIN_TOKEN`) still come from the environment. Not combinable with `SETHUCMS_STATE_URL`; for several gateways use PostgreSQL.
+
+  | Variable | Meaning |
+  | --- | --- |
+  | `SETHUCMS_FIRESTORE_PROJECT` | Google Cloud project id. Turns this mode on. |
+  | `SETHUCMS_FIRESTORE_PREFIX` | Collection-name prefix, default `sethucms`. Use one per environment. |
+  | `SETHUCMS_FIRESTORE_CREDENTIALS_JSON` | Service-account key (JSON text) for hosts outside Google Cloud, such as Fly.io. Omit on Google Cloud. |
+  | `SETHUCMS_FIRESTORE_EMULATOR_HOST` | `host:port` of the local emulator, development only. |
+
+  The change feed is saved every few seconds, so a crash can lose the last few seconds of changes; PostgreSQL has no such gap.
 
 ## Tests
 

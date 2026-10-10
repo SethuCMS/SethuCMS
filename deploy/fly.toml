@@ -6,6 +6,13 @@
 #   1. Pick a unique app name below, then:   fly apps create <app-name>
 #   2. Create a Postgres for the shared state (Fly Managed Postgres, or an outside one such as Neon)
 #      and copy its connection string.
+#      OR keep the state in Firestore instead (one machine only; see apps/api/README.md):
+#      create a service account with the "Cloud Datastore User" role in your Firebase project,
+#      download its JSON key, and in step 3 replace the SETHUCMS_STATE_URL line with
+#          SETHUCMS_FIRESTORE_PROJECT="<project-id>" \
+#          SETHUCMS_FIRESTORE_CREDENTIALS_JSON="$(cat key.json)"
+#      then delete the key file. Keep exactly one machine (fly scale count 1): a second gateway
+#      is refused by design.
 #   3. Set the secrets (never put them in this file or in git):
 #        fly secrets set -a <app-name> \
 #          SETHUCMS_VAULT_KEY="$(openssl rand -base64 32)" \
@@ -29,7 +36,7 @@ primary_region = "sin"
   NODE_ENV = "production"
   PORT = "8080"
   HOST = "0.0.0.0"
-  # State lives in Postgres (SETHUCMS_STATE_URL), so nothing is kept on disk.
+  # State lives in Postgres (SETHUCMS_STATE_URL) or Firestore, so nothing is kept on disk.
   SETHUCMS_DATA_DIR = "memory"
   # Fly's proxy sits in front of the gateway.
   SETHUCMS_TRUST_PROXY = "true"

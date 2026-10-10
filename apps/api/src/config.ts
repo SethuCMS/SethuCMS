@@ -78,6 +78,17 @@ export interface GatewayConfig {
    * Single sign-on with OpenID Connect. Off unless SETHUCMS_OIDC_ISSUER is set.
    */
   oidc?: OidcConfig;
+  /**
+   * Keep the gateway's state in Firestore instead of files or PostgreSQL.
+   * Set with SETHUCMS_FIRESTORE_PROJECT. One gateway process at a time (a
+   * lease in the database refuses a second one); use PostgreSQL to run several.
+   */
+  firestore?: {
+    projectId: string;
+    prefix: string;
+    credentialsJson?: string;
+    emulatorHost?: string;
+  };
 }
 
 /** Read a boolean env value ("1", "true", "yes", "on" are true). */
@@ -182,6 +193,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv): GatewayConfig {
     ),
     ...metrics(env['SETHUCMS_METRICS_TOKEN']),
     ...shared(env),
+    ...firestoreState(env),
     ...oidc(env, production),
     worker: flag(env['SETHUCMS_WORKER'], true),
   };
@@ -213,6 +225,46 @@ function shared(env: NodeJS.ProcessEnv): {
       100,
       60_000,
     ),
+  };
+}
+
+/**
+ * Settings for keeping state in Firestore. Empty when
+ * SETHUCMS_FIRESTORE_PROJECT is unset.
+ * @throws Error when combined with SETHUCMS_STATE_URL, or on a bad prefix.
+ */
+function firestoreState(env: NodeJS.ProcessEnv): {
+  firestore?: NonNullable<GatewayConfig['firestore']>;
+} {
+  const projectId = env['SETHUCMS_FIRESTORE_PROJECT'];
+  if (!projectId) {
+    return {};
+  }
+  if (env['SETHUCMS_STATE_URL']) {
+    throw new Error(
+      'Set either SETHUCMS_STATE_URL (PostgreSQL) or SETHUCMS_FIRESTORE_PROJECT (Firestore) for the gateway state, not both',
+    );
+  }
+  if (!/^[a-z][a-z0-9-]{4,28}[a-z0-9]$/.test(projectId)) {
+    throw new Error(
+      'SETHUCMS_FIRESTORE_PROJECT must be a Google Cloud project id (lowercase letters, digits and "-")',
+    );
+  }
+  const prefix = env['SETHUCMS_FIRESTORE_PREFIX'] || 'sethucms';
+  if (!/^[A-Za-z][A-Za-z0-9_-]{0,40}$/.test(prefix)) {
+    throw new Error(
+      'SETHUCMS_FIRESTORE_PREFIX must start with a letter and use only letters, digits, "_" and "-" (up to 41 characters)',
+    );
+  }
+  const credentialsJson = env['SETHUCMS_FIRESTORE_CREDENTIALS_JSON'];
+  const emulatorHost = env['SETHUCMS_FIRESTORE_EMULATOR_HOST'];
+  return {
+    firestore: {
+      projectId,
+      prefix,
+      ...(credentialsJson ? { credentialsJson } : {}),
+      ...(emulatorHost ? { emulatorHost } : {}),
+    },
   };
 }
 

@@ -63,6 +63,13 @@ import {
 } from './store/postgres.js';
 import { PostgresChangeStore } from './changes/postgres.js';
 import {
+  FirestoreAuditSink,
+  FirestoreChangeStore,
+  FirestoreStateStore,
+  openFirestore,
+  type FirestoreLike,
+} from './store/firestore.js';
+import {
   FileChangeStore,
   MemoryChangeStore,
   type ChangeStore,
@@ -89,6 +96,8 @@ export interface GatewayOptions {
   logger?: Logger;
   /** Add or replace database types (tests, custom adapters). */
   adapters?: Record<string, AdapterKind>;
+  /** Use this Firestore client instead of connecting (tests). */
+  firestore?: FirestoreLike;
   /** Replace DNS lookups in the network guard (tests). */
   resolveHost?: (host: string) => Promise<string[]>;
   /** Override rate limits (tests). */
@@ -121,7 +130,9 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
   // Only one process may own a data folder; with Postgres the database
   // coordinates instead, so no file lock.
   const lock =
-    options.config.dataDir && !options.config.stateUrl
+    options.config.dataDir &&
+    !options.config.stateUrl &&
+    !options.config.firestore
       ? await acquireDataLock(options.config.dataDir, {
           force: (options.env ?? process.env)['SETHUCMS_FORCE_LOCK'] === '1',
         })
@@ -151,10 +162,14 @@ async function buildGateway(options: GatewayOptions): Promise<Gateway> {
   const db = options.config.stateUrl
     ? await SharedDb.open({ url: options.config.stateUrl })
     : undefined;
+  const fs = options.config.firestore
+    ? (options.firestore ?? (await openFirestore(options.config.firestore)))
+    : undefined;
   try {
-    return await assemble(options, db);
+    return await assemble(options, db, fs);
   } catch (error) {
     await db?.close();
+    await fs?.terminate?.();
     throw error;
   }
 }
@@ -166,6 +181,7 @@ async function buildGateway(options: GatewayOptions): Promise<Gateway> {
 async function assemble(
   options: GatewayOptions,
   db: SharedDb | undefined,
+  fs: FirestoreLike | undefined,
 ): Promise<Gateway> {
   const { config } = options;
   const env = options.env ?? process.env;
@@ -184,7 +200,7 @@ async function assemble(
   const secrets = await loadSecrets({
     env,
     dataDir: config.dataDir,
-    production: config.production || Boolean(db),
+    production: config.production || Boolean(db) || Boolean(fs),
   });
   const sharedStore = db
     ? await PostgresStateStore.open(
@@ -192,14 +208,23 @@ async function assemble(
         config.statePollMs === undefined ? {} : { pollMs: config.statePollMs },
       )
     : undefined;
+  const prefix = config.firestore?.prefix ?? 'sethucms';
+  const fsStore = fs
+    ? await FirestoreStateStore.open(fs, prefix, {
+        force: env['SETHUCMS_FORCE_LOCK'] === '1',
+      })
+    : undefined;
   const store: StateStore =
     sharedStore ??
+    fsStore ??
     (config.dataDir
       ? await FileStateStore.open(config.dataDir)
       : new MemoryStateStore());
   const audit = db
     ? AuditLog.shared(new PostgresAuditSink(db))
-    : await AuditLog.open(config.dataDir, {
+    : fs
+      ? AuditLog.shared(new FirestoreAuditSink(fs, prefix))
+      : await AuditLog.open(config.dataDir, {
         ...(config.auditMaxBytes === undefined
           ? {}
           : { maxBytes: config.auditMaxBytes }),
@@ -238,7 +263,9 @@ async function assemble(
   });
   const changes: ChangeStore = db
     ? new PostgresChangeStore(db)
-    : config.dataDir
+    : fs
+      ? await FirestoreChangeStore.open(fs, prefix)
+      : config.dataDir
       ? await FileChangeStore.open(config.dataDir)
       : new MemoryChangeStore();
   const records = new RecordsService(registry, audit, events);
@@ -679,7 +706,9 @@ async function assemble(
       await audit.flush();
       stopRelay?.();
       sharedStore?.stop();
+      await fsStore?.release();
       await db?.close();
+      await fs?.terminate?.();
       metrics.close();
     },
   };
