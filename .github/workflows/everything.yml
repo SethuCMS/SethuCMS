@@ -30,7 +30,7 @@ concurrency:
 
 env:
   # GitHub names of the repositories. Change one here if a repository is named differently.
-  REPO_CORE: SethuCMS/sethucms
+  REPO_CORE: SethuCMS/SethuCMS
   REPO_ADAPTER_SDK: SethuCMS/adapter-sdk
   REPO_ADAPTERS: SethuCMS/adapters
   REPO_ADMIN: SethuCMS/admin
@@ -216,7 +216,7 @@ jobs:
             echo "SETHUCMS_VAULT_KEY=$(openssl rand -base64 32)"
             echo "SETHUCMS_CURSOR_SECRET=$(openssl rand -base64 32)"
             echo "SETHUCMS_PREVIEW_SECRET=$(openssl rand -base64 32)"
-            echo "SETHUCMS_ADMIN_TOKEN=$(openssl rand -base64 32)"
+            echo "SETHUCMS_ADMIN_TOKEN=$(openssl rand -hex 32)"
             echo "SETHUCMS_WORKER=on"
           } > .env
           export SETHUCMS_IMAGE=sethucms:ci
@@ -265,13 +265,13 @@ jobs:
         run: pnpm install --no-frozen-lockfile && pnpm build
         working-directory: sethucms-sdk-ts
       - name: React
-        run: npm ci && npm run build
+        run: npm install --no-audit --no-fund && npm run build
         working-directory: sethucms-examples/react
       - name: Angular
-        run: npm ci && npm run build
+        run: npm install --no-audit --no-fund && npm run build
         working-directory: sethucms-examples/angular
       - name: Next.js
-        run: npm ci && npm run build
+        run: npm install --no-audit --no-fund && npm run build
         working-directory: sethucms-examples/nextjs
 
   everything-ok:
