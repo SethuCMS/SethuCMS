@@ -37,10 +37,19 @@ wait_for sethu-t-pg "pg_isready -U postgres"
 sleep 15   # the Firestore emulator has no simple in-container check
 
 status=0
+SUMMARY=$(mktemp)
 run() { # label, directory, then env assignments and the command
   label=$1; dir=$2; shift 2
   echo; echo "==> $label"
-  if (cd "$dir" && env "$@"); then echo "PASS $label"; else echo "FAIL $label"; status=1; fi
+  out=$(mktemp)
+  if (cd "$dir" && env "$@") >"$out" 2>&1; then cat "$out"; echo "PASS $label"
+  else
+    cat "$out"; echo "FAIL $label"; status=1
+    { echo; echo "---- FAILED: $label ----"
+      grep -E -A14 '^ *not ok' "$out" | grep -E 'not ok|error:|code:|name:|message|at |Error' | head -40
+    } >>"$SUMMARY"
+  fi
+  rm -f "$out"
 }
 
 run "MongoDB 7"          "$ADAPTERS/packages/mongodb"   SETHUCMS_TEST_MONGO_URL="mongodb://sethu:$PW@127.0.0.1:27018" pnpm test
@@ -53,5 +62,8 @@ run "Migration across databases" "$ROOT/apps/api" \
   SETHUCMS_TEST_PG_URL="postgres://postgres:$PW@127.0.0.1:5433/postgres" \
   node --test dist/tests/migration-cross.test.js
 
-echo; [ $status -eq 0 ] && echo "All real-server suites passed." || echo "Some suites FAILED (see above)."
+echo
+if [ $status -eq 0 ]; then echo "All real-server suites passed."
+else echo "Some suites FAILED. Summary of the failures:"; cat "$SUMMARY"; fi
+rm -f "$SUMMARY"
 exit $status
