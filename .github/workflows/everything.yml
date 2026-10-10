@@ -63,39 +63,39 @@ jobs:
       SETHUCMS_TEST_PG_URL: postgres://postgres:test@127.0.0.1:5432/postgres
     steps:
       - name: Check out sethucms (core and gateway)
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           repository: ${{ env.REPO_CORE }}
           path: sethucms
           token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
       - name: Check out sethucms-adapter-sdk
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           repository: ${{ env.REPO_ADAPTER_SDK }}
           path: sethucms-adapter-sdk
           token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
       - name: Check out sethucms-adapters
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           repository: ${{ env.REPO_ADAPTERS }}
           path: sethucms-adapters
           token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
       - name: Check out sethucms-admin
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           repository: ${{ env.REPO_ADMIN }}
           path: sethucms-admin
           token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
       - name: Check out sethucms-sdk-ts
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           repository: ${{ env.REPO_SDK_TS }}
           path: sethucms-sdk-ts
           token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@v4
         with:
           version: 9.15.0
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@v4
         with:
           # node:sqlite (used by the SQLite adapter) needs Node 22.5 or newer.
           node-version: 22
@@ -143,25 +143,25 @@ jobs:
     steps:
       # A fresh checkout with nothing built: the image builds everything itself.
       - name: Check out sethucms
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           repository: ${{ env.REPO_CORE }}
           path: sethucms
           token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
       - name: Check out sethucms-adapter-sdk
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           repository: ${{ env.REPO_ADAPTER_SDK }}
           path: sethucms-adapter-sdk
           token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
       - name: Check out sethucms-adapters
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           repository: ${{ env.REPO_ADAPTERS }}
           path: sethucms-adapters
           token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
       - name: Check out sethucms-admin
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           repository: ${{ env.REPO_ADMIN }}
           path: sethucms-admin
@@ -243,21 +243,21 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Check out sethucms-sdk-ts
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           repository: ${{ env.REPO_SDK_TS }}
           path: sethucms-sdk-ts
           token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
       - name: Check out sethucms-examples
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           repository: ${{ env.REPO_EXAMPLES }}
           path: sethucms-examples
           token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@v4
         with:
           version: 9.15.0
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
       # The examples install the SDK from the folder next to them (file:../../sethucms-sdk-ts).

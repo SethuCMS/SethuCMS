@@ -3,8 +3,7 @@
 # Covers what could not be tested in development: MongoDB, the Firestore emulator, MySQL 8, MariaDB, PostgreSQL 16.
 # Needs: docker, pnpm, and the repositories built (sh scripts/build-all.sh). Takes a few minutes the first time.
 #
-# Status: written but NOT run (the machine it was written on had no Docker). If a step fails, the
-# message above it says which server; fix the script rather than skipping the server.
+# CI runs the same suites in .github/workflows/databases.yml, one job per database.
 set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 ADAPTERS="$(dirname "$ROOT")/sethucms-adapters"

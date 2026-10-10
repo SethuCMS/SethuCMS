@@ -1,10 +1,16 @@
 # SethuCMS
 
+[![CI](https://github.com/SethuCMS/sethucms/actions/workflows/ci.yml/badge.svg)](https://github.com/SethuCMS/sethucms/actions/workflows/ci.yml) [![Databases](https://github.com/SethuCMS/sethucms/actions/workflows/databases.yml/badge.svg)](https://github.com/SethuCMS/sethucms/actions/workflows/databases.yml) [![CodeQL](https://github.com/SethuCMS/sethucms/actions/workflows/codeql.yml/badge.svg)](https://github.com/SethuCMS/sethucms/actions/workflows/codeql.yml) ![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)
+
 One CMS for every database. A security-first admin and content layer that connects to SQL, document, key-value and cloud-hosted databases through a common adapter contract.
+
+**Works with:** ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-4169E1?style=flat-square&logo=postgresql&logoColor=white) ![MySQL](https://img.shields.io/badge/MySQL-4479A1?style=flat-square&logo=mysql&logoColor=white) ![MariaDB](https://img.shields.io/badge/MariaDB-003545?style=flat-square&logo=mariadb&logoColor=white) ![SQLite](https://img.shields.io/badge/SQLite-003B57?style=flat-square&logo=sqlite&logoColor=white) ![MongoDB](https://img.shields.io/badge/MongoDB-47A248?style=flat-square&logo=mongodb&logoColor=white) ![Firestore](https://img.shields.io/badge/Firestore-FFCA28?style=flat-square&logo=firebase&logoColor=black)
+
+<sub>Logos are trademarks of their owners and appear only to name the databases SethuCMS works with.</sub>
 
 Design docs live in [`sethucms-docs`](https://github.com/sethucms/sethucms-docs).
 
-> **Early software, free (MIT licence), no warranty.** PostgreSQL and SQLite are tested against the real databases; MySQL/MariaDB, MongoDB and Firestore only against compatible servers or fakes. See [QUICKSTART.md](QUICKSTART.md) to try it and [docs 18](https://github.com/sethucms/sethucms-docs/blob/main/docs/18-adapters.md) for what each adapter was tested on.
+> **Early software, free (MIT licence), no warranty.** The adapters run against real PostgreSQL, SQLite, MySQL, MariaDB and MongoDB servers, and against Google's Firestore emulator (experimental), in the *Databases* workflow. See [QUICKSTART.md](QUICKSTART.md) to try it and [docs 18](https://github.com/sethucms/sethucms-docs/blob/main/docs/18-adapters.md) for what each adapter was tested on.
 
 ## Layout
 

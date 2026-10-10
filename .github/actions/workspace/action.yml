@@ -1,0 +1,44 @@
+name: SethuCMS workspace
+description: >-
+  Check out and build the related SethuCMS repositories next to this one
+  (they link to each other by folder until the packages are on npm).
+  Run after checking this repository out into ./sethucms.
+
+inputs:
+  token:
+    description: Token with read access to the related repositories.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/checkout@v7
+      with:
+        repository: SethuCMS/adapter-sdk
+        path: sethucms-adapter-sdk
+        token: ${{ inputs.token || github.token }}
+    - uses: actions/checkout@v7
+      with:
+        repository: SethuCMS/adapters
+        path: sethucms-adapters
+        token: ${{ inputs.token || github.token }}
+    - uses: pnpm/action-setup@v6
+      with:
+        version: 9.15.0
+    - uses: actions/setup-node@v7
+      with:
+        # node:sqlite (used by the SQLite adapter) needs Node 22.5 or newer.
+        node-version: 22
+    - name: Build core
+      shell: bash
+      run: pnpm install --no-frozen-lockfile && pnpm --filter @sethucms/core build
+      working-directory: sethucms
+    - name: Build adapter SDK
+      shell: bash
+      run: pnpm install --no-frozen-lockfile && pnpm build
+      working-directory: sethucms-adapter-sdk
+    - name: Build adapters
+      shell: bash
+      run: pnpm install --no-frozen-lockfile && pnpm -r build
+      working-directory: sethucms-adapters
