@@ -33,13 +33,13 @@ jobs:
       - name: Check out sethucms-adapter-sdk
         uses: actions/checkout@v4
         with:
-          repository: sethucms/sethucms-adapter-sdk
+          repository: SethuCMS/adapter-sdk
           path: sethucms-adapter-sdk
           token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
       - name: Check out sethucms-adapters
         uses: actions/checkout@v4
         with:
-          repository: sethucms/sethucms-adapters
+          repository: SethuCMS/adapters
           path: sethucms-adapters
           token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
       - uses: pnpm/action-setup@v4
@@ -97,13 +97,13 @@ jobs:
       - name: Check out sethucms-adapter-sdk
         uses: actions/checkout@v4
         with:
-          repository: sethucms/sethucms-adapter-sdk
+          repository: SethuCMS/adapter-sdk
           path: sethucms-adapter-sdk
           token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
       - name: Check out sethucms-adapters
         uses: actions/checkout@v4
         with:
-          repository: sethucms/sethucms-adapters
+          repository: SethuCMS/adapters
           path: sethucms-adapters
           token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
       - uses: pnpm/action-setup@v4

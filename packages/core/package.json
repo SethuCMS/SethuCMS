@@ -6,12 +6,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/SethuCMS/sethucms.git",
+    "url": "git+https://github.com/SethuCMS/SethuCMS.git",
     "directory": "packages/core"
   },
-  "homepage": "https://github.com/SethuCMS/sethucms#readme",
+  "homepage": "https://github.com/SethuCMS/SethuCMS#readme",
   "bugs": {
-    "url": "https://github.com/SethuCMS/sethucms/issues"
+    "url": "https://github.com/SethuCMS/SethuCMS/issues"
   },
   "type": "module",
   "main": "./dist/src/index.js",

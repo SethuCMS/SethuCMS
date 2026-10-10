@@ -31,19 +31,19 @@ jobs:
       - name: Check out sethucms-adapter-sdk
         uses: actions/checkout@v4
         with:
-          repository: sethucms/sethucms-adapter-sdk
+          repository: SethuCMS/adapter-sdk
           path: sethucms-adapter-sdk
           token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
       - name: Check out sethucms-adapters
         uses: actions/checkout@v4
         with:
-          repository: sethucms/sethucms-adapters
+          repository: SethuCMS/adapters
           path: sethucms-adapters
           token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
       - name: Check out sethucms-admin
         uses: actions/checkout@v4
         with:
-          repository: sethucms/sethucms-admin
+          repository: SethuCMS/admin
           path: sethucms-admin
           token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
       - uses: docker/setup-buildx-action@v3

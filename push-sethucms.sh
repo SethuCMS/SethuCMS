@@ -66,15 +66,21 @@ for r in $REPOS; do
 done
 [ -n "$LIST" ] || { bad "no repos found under $ROOT"; finish 1; }
 
-fix_remote() {   # point old anydbcms-* remotes at the SethuCMS org
-  local r="$1" url new
+slug_of() {   # real "owner/name" on GitHub for a local repo (follows renames)
+  [ "$HAVE_GH" = 1 ] || return 1
+  ( cd "$ROOT/$1" && gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null )
+}
+
+fix_remote() {   # point a stale or renamed remote at the repo's current GitHub address
+  local r="$1" url slug new
   url=$(git -C "$ROOT/$r" remote get-url origin 2>/dev/null) || return 0
-  case "$url" in
-    *anydbcms*|*AnyDB*)
-      new="https://github.com/$ORG/$r.git"
-      warn "$r: old remote $url -> $new"
-      [ "$DRY" = 1 ] || git -C "$ROOT/$r" remote set-url origin "$new" ;;
-  esac
+  slug=$(slug_of "$r") || return 0
+  [ -n "$slug" ] || return 0
+  new="https://github.com/$slug.git"
+  if [ "$url" != "$new" ]; then
+    warn "$r: remote $url -> $new"
+    [ "$DRY" = 1 ] || git -C "$ROOT/$r" remote set-url origin "$new"
+  fi
 }
 
 ############################ Step 1: login check ############################
@@ -84,7 +90,8 @@ PRE_FAIL=0
 for r in $LIST; do
   d="$ROOT/$r"
   if ! git -C "$d" remote get-url origin >/dev/null 2>&1; then
-    git -C "$d" remote add origin "https://github.com/$ORG/$r.git" 2>/dev/null
+    bad "$r: no GitHub address set. Run: git -C $d remote add origin https://github.com/$ORG/<repo-name>.git"
+    PRE_FAIL=1; continue
   fi
   fix_remote "$r"
   if git -C "$d" ls-remote origin >/dev/null 2>&1; then
@@ -124,7 +131,7 @@ for r in $LIST; do
   d="$ROOT/$r"
   # keep these helper files out of the public repo
   if [ "$r" = sethucms ]; then
-    for f in push-sethucms.sh push-sethucms.desktop; do
+    for f in push-sethucms.sh push-sethucms.desktop 1-push-today-private.desktop 2-make-public-9pm.desktop FOR-DAD.txt fix-github-config.sh umbrella-ci/; do
       grep -qxF "$f" "$d/.git/info/exclude" 2>/dev/null || echo "$f" >> "$d/.git/info/exclude"
     done
     if [ -e "$d/scripts/rename-to-sethucms.sh" ] && git -C "$d" ls-files --error-unmatch scripts/rename-to-sethucms.sh >/dev/null 2>&1; then
@@ -183,9 +190,10 @@ for r in $LIST; do
     ok "$r: tag $TAG pushed" ;;
   esac
   if [ "$PUBLIC" = 1 ] && [ "$HAVE_GH" = 1 ] && [ "$HAVE_LEAKS" = 1 ]; then
-    vis=$(gh repo view "$ORG/$r" --json visibility -q .visibility 2>/dev/null)
+    slug=$(slug_of "$r"); slug="${slug:-$ORG/$r}"
+    vis=$(gh repo view "$slug" --json visibility -q .visibility 2>/dev/null)
     if [ "$vis" = "PRIVATE" ]; then
-      if gh repo edit "$ORG/$r" --visibility public --accept-visibility-change-consequences >/dev/null 2>&1; then
+      if gh repo edit "$slug" --visibility public --accept-visibility-change-consequences >/dev/null 2>&1; then
         ok "$r: now PUBLIC"
       else
         warn "$r: could not make public (needs admin rights); do it in GitHub settings"

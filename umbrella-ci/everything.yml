@@ -1,0 +1,286 @@
+name: Everything
+# One pipeline that builds and tests every SethuCMS repository together:
+#   1. build-and-test : build all repos in dependency order, run every unit test,
+#                       run the adapters against REAL MongoDB, MySQL, MariaDB,
+#                       PostgreSQL and the Firestore emulator.
+#   2. docker         : build the gateway image, start it, check health and the
+#                       admin app, then start the production compose stack.
+#   3. examples       : build the React, Angular and Next.js example apps.
+#
+# The repositories are checked out next to each other because they link to one
+# another by folder until the packages are on npm. Folder names must not change.
+#
+# While the other repositories are private, add a repository secret
+# CROSS_REPO_TOKEN (a token with read access to them). Once they are public it
+# is not needed.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "23 2 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # GitHub names of the repositories. Change one here if a repository is named differently.
+  REPO_CORE: SethuCMS/SethuCMS
+  REPO_ADAPTER_SDK: SethuCMS/adapter-sdk
+  REPO_ADAPTERS: SethuCMS/adapters
+  REPO_ADMIN: SethuCMS/admin
+  REPO_SDK_TS: SethuCMS/sdk-ts
+  REPO_EXAMPLES: SethuCMS/SethuCMS-examples
+
+jobs:
+  build-and-test:
+    name: Build, test, real databases
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      SETHUCMS_TEST_PG_HOST: 127.0.0.1
+      SETHUCMS_TEST_PG_PORT: "5432"
+      SETHUCMS_TEST_PG_USER: postgres
+      SETHUCMS_TEST_PG_PASSWORD: test
+      SETHUCMS_TEST_PG_DB: postgres
+      SETHUCMS_TEST_PG_URL: postgres://postgres:test@127.0.0.1:5432/postgres
+    steps:
+      - name: Check out sethucms (core and gateway)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.REPO_CORE }}
+          path: sethucms
+          token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+      - name: Check out sethucms-adapter-sdk
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.REPO_ADAPTER_SDK }}
+          path: sethucms-adapter-sdk
+          token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+      - name: Check out sethucms-adapters
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.REPO_ADAPTERS }}
+          path: sethucms-adapters
+          token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+      - name: Check out sethucms-admin
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.REPO_ADMIN }}
+          path: sethucms-admin
+          token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+      - name: Check out sethucms-sdk-ts
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.REPO_SDK_TS }}
+          path: sethucms-sdk-ts
+          token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+      - uses: actions/setup-node@v4
+        with:
+          # node:sqlite (used by the SQLite adapter) needs Node 22.5 or newer.
+          node-version: 22
+
+      # Same steps, same order, as scripts/build-all.sh
+      - name: 1/5 core
+        run: pnpm install --no-frozen-lockfile && pnpm --filter @sethucms/core build
+        working-directory: sethucms
+      - name: 2/5 adapter SDK
+        run: pnpm install --no-frozen-lockfile && pnpm build
+        working-directory: sethucms-adapter-sdk
+      - name: 3/5 adapters
+        run: pnpm install --no-frozen-lockfile && pnpm -r build
+        working-directory: sethucms-adapters
+      - name: 4/5 gateway
+        run: pnpm install --no-frozen-lockfile && pnpm typecheck && pnpm --filter @sethucms/api build
+        working-directory: sethucms
+      - name: 5/5 admin app
+        run: pnpm install --no-frozen-lockfile && pnpm typecheck && pnpm build && pnpm build:embedded
+        working-directory: sethucms-admin
+      - name: TypeScript SDK
+        run: pnpm install --no-frozen-lockfile && pnpm typecheck && pnpm build
+        working-directory: sethucms-sdk-ts
+
+      - name: Test core and gateway (gateway against live PostgreSQL)
+        run: pnpm test
+        working-directory: sethucms
+      - name: Test adapter SDK
+        run: pnpm test
+        working-directory: sethucms-adapter-sdk
+      - name: Test adapters (PostgreSQL live)
+        run: pnpm test
+        working-directory: sethucms-adapters
+      - name: Test TypeScript SDK
+        run: pnpm test
+        working-directory: sethucms-sdk-ts
+
+      - name: Adapters against real MongoDB, MySQL, MariaDB, PostgreSQL and Firestore emulator
+        run: sh sethucms/scripts/test-real-servers.sh
+
+  docker:
+    name: Docker image and production stack
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      # A fresh checkout with nothing built: the image builds everything itself.
+      - name: Check out sethucms
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.REPO_CORE }}
+          path: sethucms
+          token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+      - name: Check out sethucms-adapter-sdk
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.REPO_ADAPTER_SDK }}
+          path: sethucms-adapter-sdk
+          token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+      - name: Check out sethucms-adapters
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.REPO_ADAPTERS }}
+          path: sethucms-adapters
+          token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+      - name: Check out sethucms-admin
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.REPO_ADMIN }}
+          path: sethucms-admin
+          token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+
+      - name: Build the gateway image
+        run: docker build -f sethucms/docker/Dockerfile.gateway -t sethucms:ci .
+
+      - name: Demo mode - health and admin app
+        run: |
+          wait_ok() {
+            for i in $(seq 1 40); do
+              curl -fsS "$1" >/dev/null 2>&1 && return 0
+              sleep 2
+            done
+            echo "not ready: $1"
+            return 1
+          }
+          docker run -d --name gw -p 127.0.0.1:8080:8080 \
+            -e NODE_ENV=development -e HOST=0.0.0.0 \
+            -e SETHUCMS_SQLITE_DIR=/data/sqlite -e SETHUCMS_SEED_DEMO=true \
+            sethucms:ci
+          wait_ok http://127.0.0.1:8080/v1/health || { docker logs gw; exit 1; }
+          curl -fsS http://127.0.0.1:8080/v1/health
+          curl -fsS http://127.0.0.1:8080/ | grep -qi "<html"
+          # The image's own health check should turn healthy.
+          for i in $(seq 1 30); do
+            [ "$(docker inspect --format '{{.State.Health.Status}}' gw)" = healthy ] && exit 0
+            sleep 3
+          done
+          echo "image health check never became healthy"
+          docker logs gw
+          exit 1
+      - name: Stop the demo container
+        if: always()
+        run: docker rm -f gw || true
+
+      - name: Check the Caddyfile
+        run: |
+          docker run --rm -e SETHUCMS_DOMAIN=cms.example.com \
+            -v "$PWD/sethucms/deploy/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            caddy:2 caddy validate --config /etc/caddy/Caddyfile
+
+      - name: Production stack - Postgres and gateway (read-only, no capabilities)
+        run: |
+          mkdir stack
+          cp sethucms/deploy/compose.production.yml stack/
+          cd stack
+          {
+            echo "POSTGRES_PASSWORD=$(openssl rand -hex 16)"
+            echo "SETHUCMS_DOMAIN=localhost"
+            echo "SETHUCMS_VAULT_KEY=$(openssl rand -base64 32)"
+            echo "SETHUCMS_CURSOR_SECRET=$(openssl rand -base64 32)"
+            echo "SETHUCMS_PREVIEW_SECRET=$(openssl rand -base64 32)"
+            echo "SETHUCMS_ADMIN_TOKEN=$(openssl rand -hex 32)"
+            echo "SETHUCMS_WORKER=on"
+          } > .env
+          export SETHUCMS_IMAGE=sethucms:ci
+          docker compose --env-file .env -f compose.production.yml config -q
+          docker compose --env-file .env -f compose.production.yml up -d postgres gateway
+          for i in $(seq 1 40); do
+            curl -fsS http://127.0.0.1:8080/v1/health >/dev/null 2>&1 && ok=1 && break
+            sleep 3
+          done
+          if [ -z "${ok:-}" ]; then
+            docker compose --env-file .env -f compose.production.yml logs --no-color
+            exit 1
+          fi
+          curl -fsS http://127.0.0.1:8080/v1/health
+      - name: Stop the production stack
+        if: always()
+        run: |
+          cd stack 2>/dev/null || exit 0
+          SETHUCMS_IMAGE=sethucms:ci docker compose --env-file .env -f compose.production.yml down -v || true
+
+  examples:
+    name: Example apps (React, Angular, Next.js)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out sethucms-sdk-ts
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.REPO_SDK_TS }}
+          path: sethucms-sdk-ts
+          token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+      - name: Check out sethucms-examples
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.REPO_EXAMPLES }}
+          path: sethucms-examples
+          token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # The examples install the SDK from the folder next to them (file:../../sethucms-sdk-ts).
+      - name: Build the SDK
+        run: pnpm install --no-frozen-lockfile && pnpm build
+        working-directory: sethucms-sdk-ts
+      - name: React
+        run: npm install --no-audit --no-fund && npm run build
+        working-directory: sethucms-examples/react
+      - name: Angular
+        run: npm install --no-audit --no-fund && npm run build
+        working-directory: sethucms-examples/angular
+      - name: Next.js
+        run: npm install --no-audit --no-fund && npm run build
+        working-directory: sethucms-examples/nextjs
+
+  everything-ok:
+    name: Everything OK
+    if: always()
+    needs: [build-and-test, docker, examples]
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          [ "${{ needs.build-and-test.result }}" = "success" ] \
+            && [ "${{ needs.docker.result }}" = "success" ] \
+            && [ "${{ needs.examples.result }}" = "success" ]

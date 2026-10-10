@@ -16,8 +16,8 @@ import { randomBytes } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createRequire } from 'node:module';
 import { describe, it } from 'node:test';
-import { DatabaseSync } from 'node:sqlite';
 import { createMysqlClient } from '@sethucms/adapter-mysql';
 import { createMongoClient } from '@sethucms/adapter-mongodb';
 import { FirestoreAdapter } from '@sethucms/adapter-firestore';
@@ -27,6 +27,14 @@ import { startGateway, type TestGateway } from './helpers.js';
 
 // Optional servers are opt-in via environment, so the suite stays green on
 // machines without them.
+// node:sqlite arrived in Node 22.5. On older Node the file still loads and
+// these tests are skipped, instead of the whole file failing to import.
+const [nodeMajor = 0, nodeMinor = 0] = process.versions.node
+  .split('.')
+  .map(Number);
+const hasNodeSqlite = nodeMajor > 22 || (nodeMajor === 22 && nodeMinor >= 5);
+const require = createRequire(import.meta.url);
+
 const pgUrl = process.env['SETHUCMS_TEST_PG_URL'];
 const mysqlUrl = process.env['SETHUCMS_TEST_MYSQL_URL'];
 const mongoUrl = process.env['SETHUCMS_TEST_MONGO_URL'];
@@ -213,6 +221,7 @@ const targets: Target[] = [
 // awkward text; the null/0/1 booleans and the quoted unicode note check that
 // type mapping and escaping survive the copy.
 function buildSource(dir: string): void {
+  const { DatabaseSync } = require('node:sqlite');
   const db = new DatabaseSync(join(dir, 'source.db'));
   db.exec(`
     CREATE TABLE customers (id INTEGER PRIMARY KEY, name VARCHAR(100) NOT NULL, email VARCHAR(200), vip BOOLEAN);
@@ -245,7 +254,13 @@ describe('moving data between database types, creating the tables', () => {
     it(
       `SQLite -> ${target.label}`,
       // A missing server must show as skipped rather than silently pass.
-      { skip: target.run ? false : 'no server configured for this database' },
+      {
+        skip: !hasNodeSqlite
+          ? 'needs Node 22.5+ (node:sqlite)'
+          : target.run
+            ? false
+            : 'no server configured for this database',
+      },
       async () => {
         const dir = mkdtempSync(join(tmpdir(), 'sethucms-cross-'));
         // Random name so parallel or aborted runs cannot collide.
