@@ -79,6 +79,15 @@ jobs:
         working-directory: sethucms-adapters/packages/firestore
         env:
           SETHUCMS_TEST_FIRESTORE_EMULATOR: 127.0.0.1:8080
+      # The gateway's own state (single gateway and serverless) through the real driver.
+      - name: Build the gateway
+        run: pnpm --filter @sethucms/api build
+        working-directory: sethucms
+      - name: Gateway state in the Firestore emulator
+        run: node --test dist/tests/firestore-state.live.test.js
+        working-directory: sethucms/apps/api
+        env:
+          SETHUCMS_TEST_FIRESTORE_EMULATOR: 127.0.0.1:8080
 
   mysql:
     name: MySQL 8

@@ -150,6 +150,12 @@ export interface StateStore {
    * applied one at a time.
    */
   update<T>(change: (state: State) => T): Promise<T>;
+  /**
+   * Stores shared with other gateways in a way that needs no background
+   * timer (serverless) implement this: it loads newer state if another
+   * gateway changed it. The gateway calls it at the start of every request.
+   */
+  fresh?(): Promise<void>;
 }
 
 /** Keeps state in memory only. Used by tests and `--ephemeral` runs. */

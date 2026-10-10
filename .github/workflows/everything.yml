@@ -1,8 +1,9 @@
 name: Everything
 # One pipeline that builds and tests every SethuCMS repository together:
-#   1. build-and-test : build all repos in dependency order, run every unit test,
-#                       run the adapters against REAL MongoDB, MySQL, MariaDB,
-#                       PostgreSQL and the Firestore emulator.
+#   1. build-and-test : build all repos in dependency order and run every unit test
+#                       (the gateway against live PostgreSQL).
+#                       The adapters against every real database run in their own
+#                       workflow: databases.yml.
 #   2. docker         : build the gateway image, start it, check health and the
 #                       admin app, then start the production compose stack.
 #   3. examples       : build the React, Angular and Next.js example apps.
@@ -39,7 +40,7 @@ env:
 
 jobs:
   build-and-test:
-    name: Build, test, real databases
+    name: Build and test
     runs-on: ubuntu-latest
     timeout-minutes: 45
     services:
@@ -133,8 +134,6 @@ jobs:
         run: pnpm test
         working-directory: sethucms-sdk-ts
 
-      - name: Adapters against real MongoDB, MySQL, MariaDB, PostgreSQL and Firestore emulator
-        run: sh sethucms/scripts/test-real-servers.sh
 
   docker:
     name: Docker image and production stack

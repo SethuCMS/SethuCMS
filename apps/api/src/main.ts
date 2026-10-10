@@ -50,9 +50,13 @@ const lines = [
   config.adminDir
     ? `  Admin app:             http://${address.host}:${address.port}/`
     : '  Admin app:             not served (set SETHUCMS_ADMIN_DIR to the built admin folder)',
-  config.dataDir
-    ? `  Data folder:           ${config.dataDir}`
-    : '  Data folder:           none (everything is kept in memory)',
+  config.firestore
+    ? `  State:                 Firestore project ${config.firestore.projectId} (prefix ${config.firestore.prefix})`
+    : config.stateUrl
+      ? '  State:                 PostgreSQL (shared)'
+      : config.dataDir
+        ? `  Data folder:           ${config.dataDir}`
+        : '  Data folder:           none (everything is kept in memory)',
   '',
 ];
 if (gateway.generatedAdminToken) {

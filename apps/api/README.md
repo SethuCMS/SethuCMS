@@ -143,6 +143,7 @@ A new adapter is one entry there plus a package from `sethucms-adapters`.
   | `SETHUCMS_FIRESTORE_EMULATOR_HOST` | `host:port` of the local emulator, development only. |
 
   The change feed is saved every few seconds, so a crash can lose the last few seconds of changes; PostgreSQL has no such gap.
+- **Serverless** (Vercel and similar): add `SETHUCMS_SERVERLESS=1` to the Firestore settings. Many short-lived instances then share the state: a version counter in Firestore, a save that checks it, and a check for other instances' changes at the start of each request (`SETHUCMS_STATE_POLL_MS`, default 1000, 0 = every request). There is no lease. Live events, the change feed and webhooks answer `501 NOT_SUPPORTED` in this mode, and the delivery worker is off. Entry point: `src/serverless.ts`; the Vercel setup is in `deploy/vercel/README.md`.
 
 ## Tests
 

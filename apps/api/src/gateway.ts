@@ -66,6 +66,7 @@ import {
   FirestoreAuditSink,
   FirestoreChangeStore,
   FirestoreStateStore,
+  SharedFirestoreStateStore,
   openFirestore,
   type FirestoreLike,
 } from './store/firestore.js';
@@ -115,6 +116,8 @@ export interface Gateway {
   close(): Promise<void>;
   /** The admin token created on first start, when one was generated. */
   generatedAdminToken: string | undefined;
+  /** Write out pending audit entries (serverless: before the instance freezes). */
+  flush(): Promise<void>;
 }
 
 /** Allowed shape for a supplied admin token: long enough to be unguessable. */
@@ -209,11 +212,15 @@ async function assemble(
       )
     : undefined;
   const prefix = config.firestore?.prefix ?? 'sethucms';
-  const fsStore = fs
-    ? await FirestoreStateStore.open(fs, prefix, {
-        force: env['SETHUCMS_FORCE_LOCK'] === '1',
-      })
-    : undefined;
+  const fsStore = !fs
+    ? undefined
+    : config.serverless
+      ? await SharedFirestoreStateStore.open(fs, prefix, {
+          staleMs: config.statePollMs ?? 1000,
+        })
+      : await FirestoreStateStore.open(fs, prefix, {
+          force: env['SETHUCMS_FORCE_LOCK'] === '1',
+        });
   const store: StateStore =
     sharedStore ??
     fsStore ??
@@ -264,7 +271,9 @@ async function assemble(
   const changes: ChangeStore = db
     ? new PostgresChangeStore(db)
     : fs
-      ? await FirestoreChangeStore.open(fs, prefix)
+      ? config.serverless
+        ? new MemoryChangeStore()
+        : await FirestoreChangeStore.open(fs, prefix)
       : config.dataDir
       ? await FileChangeStore.open(config.dataDir)
       : new MemoryChangeStore();
@@ -480,6 +489,10 @@ async function assemble(
         throw errors.validation('URL is too long');
       }
 
+      // Serverless: pick up changes other instances saved, before anything
+      // reads the state (one cheap read at most every statePollMs).
+      await store.fresh?.();
+
       // CORS runs before routing so even errors carry the headers a browser
       // needs.
       applyCors(req, res, origins);
@@ -500,6 +513,25 @@ async function assemble(
         }
         sendJson(res, 404, {
           error: { code: 'NOT_FOUND', message: 'Not found', requestId },
+        });
+        return;
+      }
+
+      // These need a process that stays up; refuse them instead of losing data.
+      if (
+        config.serverless &&
+        (url.pathname === '/v1/changes' ||
+          url.pathname === '/v1/events' ||
+          url.pathname.endsWith('/events') ||
+          url.pathname.startsWith('/v1/admin/webhooks'))
+      ) {
+        sendJson(res, 501, {
+          error: {
+            code: 'NOT_SUPPORTED',
+            message:
+              'Live events, the change feed and webhooks are not available when the gateway runs serverless',
+            requestId,
+          },
         });
         return;
       }
@@ -682,6 +714,7 @@ async function assemble(
     server,
     services,
     generatedAdminToken,
+    flush: () => audit.flush(),
     listen: () =>
       new Promise((resolve, reject) => {
         server.once('error', reject);

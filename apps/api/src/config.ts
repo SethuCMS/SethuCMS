@@ -83,6 +83,12 @@ export interface GatewayConfig {
    * Set with SETHUCMS_FIRESTORE_PROJECT. One gateway process at a time (a
    * lease in the database refuses a second one); use PostgreSQL to run several.
    */
+  /**
+   * Run as short-lived instances (Vercel and similar): no lease, state shared
+   * through Firestore with a version counter, no worker, no live events,
+   * webhooks or change feed. Needs `firestore`. SETHUCMS_SERVERLESS=1.
+   */
+  serverless?: boolean;
   firestore?: {
     projectId: string;
     prefix: string;
@@ -193,9 +199,9 @@ export function configFromEnv(env: NodeJS.ProcessEnv): GatewayConfig {
     ),
     ...metrics(env['SETHUCMS_METRICS_TOKEN']),
     ...shared(env),
-    ...firestoreState(env),
     ...oidc(env, production),
     worker: flag(env['SETHUCMS_WORKER'], true),
+    ...firestoreState(env),
   };
 }
 
@@ -235,9 +241,17 @@ function shared(env: NodeJS.ProcessEnv): {
  */
 function firestoreState(env: NodeJS.ProcessEnv): {
   firestore?: NonNullable<GatewayConfig['firestore']>;
+  serverless?: boolean;
+  worker?: boolean;
+  statePollMs?: number;
 } {
   const projectId = env['SETHUCMS_FIRESTORE_PROJECT'];
   if (!projectId) {
+    if (flag(env['SETHUCMS_SERVERLESS'], false)) {
+      throw new Error(
+        'SETHUCMS_SERVERLESS needs SETHUCMS_FIRESTORE_PROJECT: the state must live in Firestore',
+      );
+    }
     return {};
   }
   if (env['SETHUCMS_STATE_URL']) {
@@ -256,6 +270,7 @@ function firestoreState(env: NodeJS.ProcessEnv): {
       'SETHUCMS_FIRESTORE_PREFIX must start with a letter and use only letters, digits, "_" and "-" (up to 41 characters)',
     );
   }
+  const serverless = flag(env['SETHUCMS_SERVERLESS'], false);
   const credentialsJson = env['SETHUCMS_FIRESTORE_CREDENTIALS_JSON'];
   const emulatorHost = env['SETHUCMS_FIRESTORE_EMULATOR_HOST'];
   return {
@@ -265,6 +280,19 @@ function firestoreState(env: NodeJS.ProcessEnv): {
       ...(credentialsJson ? { credentialsJson } : {}),
       ...(emulatorHost ? { emulatorHost } : {}),
     },
+    ...(serverless
+      ? {
+          serverless: true,
+          worker: false,
+          statePollMs: whole(
+            'SETHUCMS_STATE_POLL_MS',
+            env['SETHUCMS_STATE_POLL_MS'],
+            1000,
+            0,
+            60_000,
+          ),
+        }
+      : {}),
   };
 }
 
