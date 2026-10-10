@@ -12,7 +12,7 @@ SethuCMS is free software (MIT licence) with **no warranty**. It is early: read 
 ```sh
 cd sethucms
 sh scripts/build-all.sh     # installs and builds all four; a few minutes the first time
-sh scripts/run-local.sh     # http://127.0.0.1:8080
+sh scripts/run-local.sh     # http://127.0.0.1:8080 (set PORT=8090 if something else uses 8080)
 ```
 
 The first start prints an **admin token once**. Copy it, open http://127.0.0.1:8080 and sign in. It starts with a demo connection so you can click around. Your data stays in `sethucms/.sethucms-data`.
@@ -29,10 +29,11 @@ In the admin app choose **Connections, New connection**, pick the database and f
 
 ## What is tested
 
-- PostgreSQL 16 and SQLite: tested against the real thing.
-- MySQL/MariaDB, MongoDB: tested only against compatible servers (Dolt, FerretDB). Try them on a copy of your data.
-- Firestore: tested only against a fake. **Experimental.**
-- The Docker image and `docker/compose.demo.yml` have not been run end to end. The same build steps do work from a clean copy without Docker.
+- PostgreSQL 16, SQLite, MySQL 8, MariaDB 11 and MongoDB 7: the adapters run against the real servers in CI (the *Databases* workflow), one job per database.
+- Firestore: tested against Google's local emulator. **Experimental.**
+- The Docker image and the production compose stack are built, started and health-checked in CI (the *Everything* workflow).
+
+Still early software: try a new database on a copy of your data first.
 
 Details: `sethucms-docs/docs/18-adapters.md`.
 

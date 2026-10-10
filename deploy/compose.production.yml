@@ -2,7 +2,8 @@
 # Put this next to a .env file (copy compose.env.example). Start: docker compose --env-file .env -f compose.production.yml up -d
 # Add the standalone worker with:  --profile worker   (also set SETHUCMS_WORKER=off for the gateway in .env)
 #
-# Status: written but never run.
+# Status: CI starts this stack (Postgres + gateway, read-only, no capabilities) and checks /v1/health.
+# Not yet exercised in CI: Caddy with a real domain and certificate. Easiest install: deploy/install-server.sh
 name: sethucms
 services:
   postgres:

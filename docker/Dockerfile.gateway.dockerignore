@@ -1,7 +1,17 @@
+# Used by: docker build -f sethucms/docker/Dockerfile.gateway ...
+# The build context is the folder that holds all the repositories, so without this file
+# Docker would copy your own node_modules, built output and local data into the image.
+# That breaks the install (host links are not valid in the container) and, worse, could
+# bake local databases, tokens and .env files into an image you later publish.
+**/node_modules
+**/dist
 **/.git
-**/node_modules/.cache
+**/.github
 **/.sethucms-data
 **/.env
 **/.env.*
 !**/.env.example
+**/*.log
+**/.next
 **/coverage
+**/.turbo
