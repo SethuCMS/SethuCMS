@@ -61,31 +61,33 @@ export class FakeStateFirestore implements FirestoreLike {
 
   collection(name: string): FsCollection {
     const make = (
-      direction: 'asc' | 'desc',
+      field: string,
       max: number,
       after: string | undefined,
     ): FsQuery => ({
-      orderBy: (field, dir = 'asc') => {
-        if (field !== '__name__') {
-          throw new Error('the fake only orders by document id');
+      orderBy: (by, dir = 'asc') => {
+        // The Firestore emulator refuses descending scans; so does this fake.
+        if (dir !== 'asc') {
+          throw new Error('9 FAILED_PRECONDITION: no descending scans');
         }
-        return make(dir, max, after);
+        return make(by, max, after);
       },
-      limit: (count) => make(direction, count, after),
-      startAfter: (snap) => make(direction, max, snap.id),
+      limit: (count) => make(field, count, after),
+      startAfter: (snap) => make(field, max, snap.id),
       get: async (): Promise<FsQuerySnapshot> => {
-        let ids = [...(this.data.get(name)?.keys() ?? [])].sort();
-        if (direction === 'desc') {
-          ids.reverse();
-        }
+        const table = this.data.get(name) ?? new Map<string, any>();
+        const key = (id: string): string =>
+          field === '__name__' ? id : String(table.get(id)?.[field] ?? '');
+        let ids = [...table.keys()].sort((x, y) => (key(x) < key(y) ? -1 : key(x) > key(y) ? 1 : 0));
         if (after !== undefined) {
-          ids = ids.filter((id) => (direction === 'asc' ? id > after : id < after));
+          const cut = ids.indexOf(after);
+          ids = cut >= 0 ? ids.slice(cut + 1) : ids;
         }
         return { docs: ids.slice(0, max).map((id) => this.snapshot(name, id)) };
       },
     });
     return {
-      ...make('asc', Number.MAX_SAFE_INTEGER, undefined),
+      ...make('__name__', Number.MAX_SAFE_INTEGER, undefined),
       doc: (id: string) => this.ref(name, id),
     };
   }

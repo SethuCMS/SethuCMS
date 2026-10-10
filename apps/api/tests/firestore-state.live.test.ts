@@ -120,8 +120,12 @@ describe('audit log and change feed in real Firestore', { skip }, () => {
   it('lists audit entries newest first and keeps each chain in order', async () => {
     const fs = await connect();
     const p = `${prefix}_audit`;
-    const one = new FirestoreAuditSink(fs, p, { chain: 'bbbb', pageSize: 2 });
-    const two = new FirestoreAuditSink(fs, p, { chain: 'aaaa', pageSize: 2 });
+    // A clock that moves one step per entry: two gateways writing in the same
+    // millisecond would otherwise be ordered by chain name, not by call order.
+    let clock = 1_700_000_000_000;
+    const now = (): number => (clock += 10);
+    const one = new FirestoreAuditSink(fs, p, { chain: 'bbbb', pageSize: 2, now });
+    const two = new FirestoreAuditSink(fs, p, { chain: 'aaaa', pageSize: 2, now });
     for (const [sink, n] of [[one, 1], [two, 2], [one, 3], [two, 4], [one, 5]] as const) {
       await sink.append(entry(n));
     }

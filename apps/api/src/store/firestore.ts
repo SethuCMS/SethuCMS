@@ -531,7 +531,11 @@ export class SharedFirestoreStateStore extends MemoryStateStore {
     return this.serial(async () => {
       // Start from the newest state so `change` sees what other instances did.
       await this.sync();
-      for (let attempt = 0; attempt < 5; attempt += 1) {
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        if (attempt > 0) {
+          // Back off a little so instances that collide do not collide again.
+          await new Promise((r) => setTimeout(r, Math.random() * 25 * attempt));
+        }
         const draft = structuredClone(this.state);
         const result = change(draft);
         const ops = this.diff(draft);
@@ -616,6 +620,9 @@ export class SharedFirestoreStateStore extends MemoryStateStore {
 // ---------------------------------------------------------------------------
 // Audit log
 
+const MAX_TS = 9_999_999_999_999;
+const MAX_N = 99_999_999;
+
 export interface FirestoreAuditOptions {
   chain?: string;
   pageSize?: number;
@@ -652,14 +659,17 @@ export class FirestoreAuditSink implements AuditSink {
     this.last = ts;
     this.n += 1;
     const id = `${String(ts).padStart(13, '0')}-${this.chain}-${String(this.n).padStart(8, '0')}`;
+    // The emulator cannot scan backwards, so newest-first reads an ascending
+    // key made from the time counted down.
+    const newest = `${String(MAX_TS - ts).padStart(13, '0')}-${this.chain}-${String(MAX_N - this.n).padStart(8, '0')}`;
     await this.col()
       .doc(id)
-      .set({ chain: this.chain, json: JSON.stringify(entry) });
+      .set({ chain: this.chain, newest, json: JSON.stringify(entry) });
   }
 
   async latest(limit: number): Promise<AuditEntry[]> {
     const snapshot = await this.col()
-      .orderBy('__name__', 'desc')
+      .orderBy('newest', 'asc')
       .limit(limit)
       .get();
     return snapshot.docs.map((doc) => JSON.parse(doc.data().json) as AuditEntry);
