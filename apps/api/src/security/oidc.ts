@@ -15,9 +15,15 @@ import {
   createPublicKey,
   randomBytes,
   verify as cryptoVerify,
-  type JsonWebKey,
   type KeyObject,
 } from 'node:crypto';
+
+// A public key in JWK form, taken from the Node typings so it works across @types/node versions
+// (newer versions no longer export `JsonWebKey` from node:crypto).
+type JsonWebKey = Extract<
+  Parameters<typeof createPublicKey>[0],
+  { format: 'jwk' }
+>['key'];
 
 /** Single sign-on settings. Built from environment variables in config.ts. */
 export interface OidcConfig {
