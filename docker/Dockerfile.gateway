@@ -15,7 +15,8 @@
 
 FROM node:25-bookworm-slim AS build
 ENV PNPM_HOME=/pnpm PATH=/pnpm:$PATH
-RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
+# Node 25 images no longer ship corepack, so install pnpm directly.
+RUN npm install -g pnpm@9.15.0
 WORKDIR /w
 COPY sethucms ./sethucms
 COPY sethucms-adapter-sdk ./sethucms-adapter-sdk
