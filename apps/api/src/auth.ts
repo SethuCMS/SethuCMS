@@ -165,7 +165,8 @@ export class Authenticator {
   }
 
   /**
-   * A short-lived session for someone who signed in through single sign-on.
+   * A short-lived session for someone who signed in through single sign-on or
+   * with an authenticator code (`source`).
    * Sessions of the same person beyond the newest few are revoked, and expired
    * sessions are removed, so sign-ins do not pile up in the saved state.
    */
@@ -174,6 +175,7 @@ export class Authenticator {
     role: Role,
     subject: string,
     hours: number,
+    source: 'oidc' | 'totp' = 'oidc',
   ): Promise<{ id: string; token: string; expiresAt: string }> {
     const plain = newTokenValue();
     const id = `tok_${randomUUID().slice(0, 8)}`;
@@ -182,7 +184,7 @@ export class Authenticator {
     await this.store.update((state) => {
       for (const [key, token] of Object.entries(state.tokens)) {
         if (
-          token.source === 'oidc' &&
+          token.source === source &&
           token.expiresAt &&
           Date.parse(token.expiresAt) < now - 86_400_000
         ) {
@@ -192,7 +194,7 @@ export class Authenticator {
       const mine = Object.values(state.tokens)
         .filter(
           (token) =>
-            token.source === 'oidc' &&
+            token.source === source &&
             token.subject === subject &&
             !token.revokedAt,
         )
@@ -207,7 +209,7 @@ export class Authenticator {
         hash: hashToken(plain),
         createdAt: new Date(now).toISOString(),
         expiresAt,
-        source: 'oidc',
+        source,
         subject,
       };
     });
@@ -215,11 +217,12 @@ export class Authenticator {
   }
 
   /**
-   * True when the token came from single sign-on rather than being created
-   * by an admin.
+   * True when the token is a sign-in session (single sign-on or authenticator
+   * code) rather than an API token created by an admin.
    */
   isSession(id: string): boolean {
-    return this.store.read().tokens[id]?.source === 'oidc';
+    const source = this.store.read().tokens[id]?.source;
+    return source === 'oidc' || source === 'totp';
   }
 
   /**
@@ -292,9 +295,15 @@ export class Authenticator {
    * first-run setup is still needed).
    */
   hasActiveAdmin(): boolean {
-    return Object.values(this.store.read().tokens).some(
-      (token) =>
-        token.role === 'admin' && !token.revokedAt && !isExpired(token),
+    const state = this.store.read();
+    // An admin account (authenticator sign-in) counts too, so the setup token
+    // can be retired once a person can sign in.
+    return (
+      Object.values(state.people).some((person) => person.role === 'admin') ||
+      Object.values(state.tokens).some(
+        (token) =>
+          token.role === 'admin' && !token.revokedAt && !isExpired(token),
+      )
     );
   }
 }

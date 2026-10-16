@@ -13,16 +13,13 @@
  *     remembers a fingerprint of the record it started from, and publishing
  *     refuses (unless forced) when the record has changed since
  */
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import {
   assertWritable,
-  canonicalJson,
   errors,
   isPlainObject,
   maskRecord,
   primaryKeyOf,
-  validateRecord,
-  throwIfIssues,
   type CollectionDefinition,
 } from '@sethucms/core';
 import type { Authenticator, Principal } from '../auth.js';
@@ -35,39 +32,19 @@ import type { StateStore, StoredDraft } from '../store/state.js';
 import {
   accessFor,
   isRecordInScope,
-  rejectUnknownFields,
   tryReadAccess,
   visibleRecord,
 } from './access.js';
 import type { RecordsService } from './records.js';
+import { assertCanEdit, checkValues, pruneFinished } from './drafts-checks.js';
+import {
+  MAX_ACTIVE_DRAFTS,
+  PREVIEW_TTL_SECONDS,
+  fingerprint,
+  type DraftView,
+} from './drafts-types.js';
 
-// Limits that keep the gateway's own store from growing without bound.
-const MAX_ACTIVE_DRAFTS = 5000;
-const MAX_VALUES_BYTES = 256 * 1024;
-const KEEP_FINISHED_DAYS = 30;
-const PREVIEW_TTL_SECONDS = 15 * 60;
-
-/** A draft as sent to a client: values decrypted and masked per caller. */
-export interface DraftView {
-  id: string;
-  connectionId: string;
-  collection: string;
-  recordId: string | null;
-  values: Record<string, unknown>;
-  version: number;
-  status: StoredDraft['status'];
-  createdBy: string;
-  updatedBy: string;
-  createdAt: string;
-  updatedAt: string;
-  publishedAt?: string;
-  publishedRecordId?: string;
-}
-
-// Hash of a record's canonical JSON; used to detect changes made behind
-// a draft's back. Canonical form makes key order irrelevant.
-const fingerprint = (record: Record<string, unknown>): string =>
-  createHash('sha256').update(canonicalJson(record)).digest('hex');
+export type { DraftView } from './drafts-types.js';
 
 /**
  * Create, edit, discard and publish drafts, and serve signed previews.
@@ -105,7 +82,7 @@ export class DraftsService {
     status: string | null,
   ): Promise<DraftView[]> {
     const collection = await this.collectionOf(connectionId, collectionName);
-    this.assertCanEdit(principal, collection);
+    assertCanEdit(principal, collection);
     const wanted = status ?? 'draft';
     if (!['draft', 'published', 'discarded', 'all'].includes(wanted)) {
       throw errors.validation(
@@ -132,7 +109,7 @@ export class DraftsService {
     draftId: string,
   ): Promise<DraftView> {
     const collection = await this.collectionOf(connectionId, collectionName);
-    this.assertCanEdit(principal, collection);
+    assertCanEdit(principal, collection);
     return this.view(
       principal,
       collection,
@@ -185,7 +162,7 @@ export class DraftsService {
         'Creating records is not available with row-level rules',
       );
     }
-    this.checkValues(
+    checkValues(
       collection,
       values,
       access,
@@ -281,7 +258,7 @@ export class DraftsService {
       collection,
       current.recordId ? 'update' : 'create',
     );
-    this.checkValues(
+    checkValues(
       collection,
       body['values'],
       access,
@@ -339,7 +316,7 @@ export class DraftsService {
     requestId: string,
   ): Promise<void> {
     const collection = await this.collectionOf(connectionId, collectionName);
-    this.assertCanEdit(principal, collection);
+    assertCanEdit(principal, collection);
     this.find(connectionId, collectionName, draftId);
 
     const discarded = await this.store.update((state) => {
@@ -447,7 +424,7 @@ export class DraftsService {
         draft.publishedAt = new Date().toISOString();
         draft.publishedRecordId = recordId;
         draft.updatedBy = principal.id;
-        this.pruneFinished(state.drafts);
+        pruneFinished(state.drafts);
         return structuredClone(draft);
       });
       this.audit.record({
@@ -485,7 +462,7 @@ export class DraftsService {
     requestId: string,
   ) {
     const collection = await this.collectionOf(connectionId, collectionName);
-    this.assertCanEdit(principal, collection);
+    assertCanEdit(principal, collection);
     this.find(connectionId, collectionName, draftId);
     // The link records its creator, so the viewer sees only what that person
     // may read, not what the link's holder could.
@@ -607,47 +584,6 @@ export class DraftsService {
     return draft;
   }
 
-  /** Require update or create permission on the collection. */
-  private assertCanEdit(
-    principal: Principal,
-    collection: CollectionDefinition,
-  ): void {
-    try {
-      accessFor(principal, collection, 'update');
-    } catch {
-      accessFor(principal, collection, 'create');
-    }
-  }
-
-  /**
-   * Validate draft values: object shape, size, known fields, writable
-   * fields and type rules. Missing required fields are allowed (see below).
-   */
-  private checkValues(
-    collection: CollectionDefinition,
-    values: unknown,
-    access: ReturnType<typeof accessFor>,
-    mode: 'create' | 'update',
-  ): void {
-    if (!isPlainObject(values)) {
-      throw errors.validation('values must be an object');
-    }
-    if (Buffer.byteLength(JSON.stringify(values)) > MAX_VALUES_BYTES) {
-      throw errors.validation('Draft is too large');
-    }
-    rejectUnknownFields(collection, values);
-    assertWritable(values, access);
-    // Drafts may be incomplete: check the values that are present, not the ones
-    // still missing.
-    const issues = validateRecord(collection, values, mode).filter(
-      (issue) =>
-        !(
-          issue.message === 'is required' && !Object.hasOwn(values, issue.path)
-        ),
-    );
-    throwIfIssues(issues, 'Invalid draft values');
-  }
-
   /**
    * Compare the record's current fingerprint with the one saved at draft
    * start.
@@ -729,18 +665,6 @@ export class DraftsService {
     });
   }
 
-  /** Drop published/discarded drafts older than the retention period. */
-  private pruneFinished(drafts: Record<string, StoredDraft>): void {
-    const cutoff = Date.now() - KEEP_FINISHED_DAYS * 86_400_000;
-    for (const [id, draft] of Object.entries(drafts)) {
-      if (
-        (draft.status === 'published' || draft.status === 'discarded') &&
-        Date.parse(draft.updatedAt) < cutoff
-      ) {
-        delete drafts[id];
-      }
-    }
-  }
 }
 
 // Re-exported so callers can import both from the drafts module.

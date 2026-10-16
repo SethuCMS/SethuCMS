@@ -136,3 +136,37 @@ export async function readJson(req: IncomingMessage): Promise<unknown> {
     throw errors.validation('Request body is not valid JSON');
   }
 }
+
+/**
+ * Read a raw body (a file upload) with a size limit.
+ *
+ * @param req Incoming request.
+ * @param maxBytes Largest body accepted.
+ * @throws A validation error when the body is empty or larger than `maxBytes`.
+ */
+export async function readBytes(
+  req: IncomingMessage,
+  maxBytes: number,
+): Promise<Buffer> {
+  const tooLarge = () =>
+    errors.validation(
+      `The file is too large (the limit is ${maxBytes / 1_000_000} MB)`,
+    );
+  // Cheap early reject from the header; it can lie, so the stream is counted too.
+  if (Number(req.headers['content-length'] ?? 0) > maxBytes) {
+    throw tooLarge();
+  }
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += (chunk as Buffer).length;
+    if (size > maxBytes) {
+      throw tooLarge();
+    }
+    chunks.push(chunk as Buffer);
+  }
+  if (size === 0) {
+    throw errors.validation('The file is empty');
+  }
+  return Buffer.concat(chunks);
+}

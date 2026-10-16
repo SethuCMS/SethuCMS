@@ -40,6 +40,20 @@ export interface AdapterKind {
   seed?: Record<string, Array<Record<string, unknown>>>;
   /** Whether `seed` applies for these settings. */
   wantsSeed?(config: Record<string, unknown>): boolean;
+  /**
+   * Set for databases without a schema that bring a collection into being
+   * with its first record (Firestore). An administrator may then declare an
+   * empty collection from the admin panel. `keyField` names the generated key
+   * every collection of this database has. Left unset for SQL databases:
+   * creating tables in someone else's database stays a migration-only step.
+   */
+  declareCollections?: { keyField: string };
+  /**
+   * Set when the adapter can keep images and PDFs in the database itself
+   * (Firestore). The admin then offers an upload button, and the gateway serves
+   * the files at /v1/files/...
+   */
+  files?: boolean;
 }
 
 // Use the demo schema unless the admin supplies their own (1-50, capped
@@ -143,6 +157,8 @@ export function builtInAdapters(
     firestore: {
       label: 'Firestore (Firebase)',
       create: () => new FirestoreAdapter(),
+      declareCollections: { keyField: 'id' },
+      files: true,
       // Real Firestore lives at Google; an emulator is on the host the
       // administrator names.
       networkHost: (config) => {

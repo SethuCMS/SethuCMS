@@ -90,9 +90,61 @@ export interface StoredToken {
    * "oidc" for a session created by single sign-on. Such tokens are short-lived
    * and swept after they expire.
    */
-  source?: 'oidc';
-  /** The identity provider's id for the person (OIDC `sub`). */
+  source?: 'oidc' | 'totp';
+  /** The identity provider's id (OIDC `sub`), or the person's id for 'totp'. */
   subject?: string;
+}
+
+/**
+ * A person who signs in to the admin app with a code from an authenticator app
+ * (Google Authenticator and similar). Only the encrypted secret is kept.
+ */
+export interface StoredPerson {
+  id: string;
+  /** Lower-case sign-in name. */
+  username: string;
+  /** Name shown in the app and the audit log. */
+  name: string;
+  role: Role;
+  /** Encrypted base32 secret shared with the authenticator app. */
+  secret: string;
+  /** False until the first correct code proves the app was set up. */
+  enabled: boolean;
+  createdAt: string;
+  createdBy: string;
+  /** Newest 30-second step already used, so a code cannot be used twice. */
+  lastStep?: number;
+  /** Wrong codes in a row; reset by a correct code. */
+  failures?: number;
+  /** While in the future, sign-in for this person is refused. */
+  lockedUntil?: string;
+}
+
+/**
+ * A standing invitation: this e-mail address may sign in through Google or
+ * GitHub (Firebase) and gets this role. It is checked after the lists set in
+ * the gateway's environment, so those always win.
+ */
+export interface StoredInvite {
+  id: string;
+  /** Lower-case address. Counts only when the sign-in provider verified it. */
+  email: string;
+  role: Role;
+  createdAt: string;
+  createdBy: string;
+}
+
+/**
+ * How much file storage is in use, so uploads can be limited. One record per
+ * connection ("c:<connection>") and one per caller per day
+ * ("d:<caller>:<yyyy-mm-dd>"; old days are removed as new uploads arrive).
+ */
+export interface StoredFileUsage {
+  id: string;
+  bytes: number;
+  count: number;
+  /** Set on the per-day records. */
+  day?: string;
 }
 
 /** A subscriber that receives change events over HTTP. */
@@ -126,6 +178,12 @@ export interface State {
   migrations: Record<string, MigrationJob>;
   /** Where change events are delivered. */
   webhooks: Record<string, StoredWebhook>;
+  /** People who sign in with an authenticator app. */
+  people: Record<string, StoredPerson>;
+  /** E-mail invitations added from the admin panel. */
+  invites: Record<string, StoredInvite>;
+  /** Stored-file totals used for upload limits. */
+  fileUsage: Record<string, StoredFileUsage>;
 }
 
 /** A fresh state with no records. */
@@ -136,6 +194,9 @@ export const emptyState = (): State => ({
   tokens: {},
   migrations: {},
   webhooks: {},
+  people: {},
+  invites: {},
+  fileUsage: {},
 });
 
 /**

@@ -267,6 +267,8 @@ describe('single sign-on (OpenID Connect)', () => {
       token: null,
     });
     assert.deepEqual(config.body, {
+      // No one has set up an authenticator app in this test.
+      totp: { enabled: false },
       oidc: { enabled: true, loginPath: '/v1/auth/oidc/login' },
     });
   });
@@ -531,5 +533,56 @@ describe('single sign-on with an email-domain rule', () => {
       (await signIn(gateway, provider)).fragment.get('sso_error'),
       'denied',
     );
+  });
+});
+
+// Google has no groups claim, so roles are given by e-mail address. An address
+// counts only when the provider says it is verified, and case is ignored.
+describe('single sign-on with roles by e-mail (Google style)', () => {
+  const provider = new FakeProvider();
+  let gateway: TestGateway;
+
+  before(async () => {
+    await provider.start();
+    gateway = await startGateway({
+      oidc: {
+        issuer: provider.url,
+        clientId: 'sethucms-client',
+        clientSecret: 's3cret',
+        redirectUri: 'http://127.0.0.1:0/v1/auth/oidc/callback',
+        scopes: 'openid email profile',
+        roleClaim: 'email',
+        roles: { admin: ['boss@example.com'], editor: ['ed@example.com'], viewer: [] },
+        allowedDomains: [],
+        sessionHours: 8,
+        adminUrl: 'http://admin.test/',
+      },
+    });
+  });
+
+  after(async () => {
+    await gateway?.close();
+    await provider.stop();
+  });
+
+  const roleOf = async (claims: Record<string, unknown>): Promise<string> => {
+    provider.next = { claims: { sub: `g-${randomBytes(3).toString('hex')}`, ...claims } };
+    const { fragment } = await signIn(gateway, provider);
+    const token = fragment.get('sso_token');
+    if (!token) {
+      return `none:${fragment.get('sso_error')}`;
+    }
+    return (await gateway.call('GET', '/v1/me', { token })).body.data.role;
+  };
+
+  it('maps a verified e-mail address to its role, ignoring case', async () => {
+    assert.equal(await roleOf({ email: 'Boss@Example.com', email_verified: true }), 'admin');
+    assert.equal(await roleOf({ email: 'ed@example.com', email_verified: true }), 'editor');
+  });
+
+  it('refuses an address that is unverified or not listed', async () => {
+    assert.equal(await roleOf({ email: 'boss@example.com', email_verified: false }), 'none:denied');
+    assert.equal(await roleOf({ email: 'boss@example.com' }), 'none:denied');
+    assert.equal(await roleOf({ email: 'stranger@example.com', email_verified: true }), 'none:denied');
   });
 });

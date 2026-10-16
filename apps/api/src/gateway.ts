@@ -9,40 +9,56 @@
  *   5. the route handler
  *   6. a standard error body for anything that goes wrong
  */
+import { startChangeFeed } from './boot/change-feed.js';
+import { registerGauges } from './boot/gauges.js';
+import { recordRequest } from './boot/access-log.js';
+import { ensureAdmin } from './boot/admin.js';
+import { openWorkspaces } from './boot/workspaces.js';
+import {
+  applyCors,
+  clientIp,
+  logIfUnexpected,
+  traceIdOf,
+} from './boot/http-helpers.js';
 import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
 import {
   createServer,
   type IncomingMessage,
-  type Server,
   type ServerResponse,
 } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { CursorCodec, errors, isSethuError } from '@sethucms/core';
 import { AuditLog } from './audit.js';
 import { Authenticator, type Principal } from './auth.js';
-import type { GatewayConfig } from './config.js';
 import { MigrationManager } from './migration/manager.js';
 import { acquireDataLock } from './security/data-lock.js';
-import { builtInAdapters, type AdapterKind } from './connections/adapters.js';
+import { builtInAdapters } from './connections/adapters.js';
 import { DEMO_SEED } from './connections/demo.js';
 import { ConnectionRegistry } from './connections/registry.js';
 import { DraftsService } from './content/drafts.js';
 import { RecordsService } from './content/records.js';
 import { EventBus } from './events.js';
 import { Router, type RequestContext, type Route } from './http/router.js';
-import {
-  API_SECURITY_HEADERS,
-  errorResponse,
-  readJson,
-  sendJson,
-} from './http/respond.js';
+import { errorResponse, readJson, sendJson } from './http/respond.js';
 import { serveAdmin } from './http/static.js';
-import { createLogger, type Logger } from './logger.js';
+import { createLogger } from './logger.js';
 import { Metrics } from './metrics.js';
 import { registerAdminRoutes } from './routes/admin.js';
 import { registerAuthRoutes } from './routes/auth.js';
+import { registerGithubRoutes } from './routes/github.js';
+import { GithubClient } from './security/github.js';
+import { registerFirebaseRoutes } from './routes/firebase.js';
+import { loadSchema } from './schema/code.js';
+import { registerSchemaRoutes } from './routes/schema.js';
+import { registerWorkspaceRoutes } from './routes/workspaces.js';
+import { Workspaces } from './tenancy.js';
+import { FirebaseVerifier } from './security/firebase.js';
+import { registerInviteRoutes } from './routes/invites.js';
+import { registerPeopleRoutes } from './routes/people.js';
 import { OidcClient } from './security/oidc.js';
 import { registerContentRoutes } from './routes/content.js';
+import { registerFileRoutes } from './routes/files.js';
 import { registerOpsRoutes } from './routes/ops.js';
 import { StreamCounter, type Services } from './routes/services.js';
 import { IdempotencyStore } from './security/idempotency.js';
@@ -56,11 +72,7 @@ import {
   MemoryStateStore,
   type StateStore,
 } from './store/state.js';
-import {
-  OUTBOX_CHANNEL,
-  PostgresStateStore,
-  SharedDb,
-} from './store/postgres.js';
+import { PostgresStateStore, SharedDb } from './store/postgres.js';
 import { PostgresChangeStore } from './changes/postgres.js';
 import {
   FirestoreAuditSink,
@@ -75,53 +87,14 @@ import {
   MemoryChangeStore,
   type ChangeStore,
 } from './changes/store.js';
-import { DeliveryWorker, matchesWebhook } from './changes/worker.js';
-import { registerChangeRoutes } from './routes/changes.js';
 import {
   PostgresAuditSink,
   PostgresIdempotencyStore,
   relayEvents,
 } from './store/postgres-shared.js';
 
-/** Inputs for {@link createGateway}. Only `config` is required. */
-/** A running (or ready to run) gateway. */
-export interface GatewayOptions {
-  /** Settings, normally from `configFromEnv`. */
-  config: GatewayConfig;
-  /**
-   * Environment for secrets and the bootstrap admin token. Defaults to
-   * `process.env`.
-   */
-  env?: NodeJS.ProcessEnv;
-  /** Replace the default logger. */
-  logger?: Logger;
-  /** Add or replace database types (tests, custom adapters). */
-  adapters?: Record<string, AdapterKind>;
-  /** Use this Firestore client instead of connecting (tests). */
-  firestore?: FirestoreLike;
-  /** Replace DNS lookups in the network guard (tests). */
-  resolveHost?: (host: string) => Promise<string[]>;
-  /** Override rate limits (tests). */
-  rateLimit?: { capacity: number; refillPerSecond: number };
-}
-
-export interface Gateway {
-  /** The underlying Node HTTP server. */
-  server: Server;
-  /** Shared services, exposed mainly for tests. */
-  services: Services;
-  /** Start listening. Returns the real port (useful with port 0). */
-  listen(): Promise<{ host: string; port: number }>;
-  /** Stop accepting requests, finish background work and release the lock. */
-  close(): Promise<void>;
-  /** The admin token created on first start, when one was generated. */
-  generatedAdminToken: string | undefined;
-  /** Write out pending audit entries (serverless: before the instance freezes). */
-  flush(): Promise<void>;
-}
-
-/** Allowed shape for a supplied admin token: long enough to be unguessable. */
-const ADMIN_TOKEN_PATTERN = /^[A-Za-z0-9_\-.]{32,200}$/;
+import type { Gateway, GatewayOptions } from './boot/types.js';
+export type { Gateway, GatewayOptions } from './boot/types.js';
 
 /**
  * Start a gateway. With a data folder, only one gateway may use it at a time
@@ -188,6 +161,8 @@ async function assemble(
 ): Promise<Gateway> {
   const { config } = options;
   const env = options.env ?? process.env;
+  // A wrong schema file stops the start rather than showing the wrong form.
+  const codeSchema = await loadSchema(env, options.schema);
   const logger =
     options.logger ??
     createLogger({
@@ -253,6 +228,7 @@ async function assemble(
     ...(options.resolveHost ? { resolve: options.resolveHost } : {}),
   });
   const registry = new ConnectionRegistry({
+    ...(codeSchema ? { schema: codeSchema } : {}),
     store,
     vault,
     cursors,
@@ -325,100 +301,75 @@ async function assemble(
     streams: new StreamCounter(),
     metrics,
     metricsToken: config.metricsToken,
+    schema: codeSchema,
   };
+  // Workspaces: every person who signs in gets a gateway of their own.
+  const firebaseVerifier = config.firebaseAuth
+    ? new FirebaseVerifier(config.firebaseAuth)
+    : undefined;
+  const workspaces = openWorkspaces({
+    options,
+    env,
+    config,
+    firebase: firebaseVerifier,
+    fs,
+    db,
+    logger,
+  });
   registerAdminRoutes(services);
   registerAuthRoutes(services, {
     oidc: config.oidc ? new OidcClient(config.oidc) : undefined,
+    github: Boolean(config.github),
+    ...(config.firebaseAuth
+      ? {
+          firebase: {
+            apiKey: config.firebaseAuth.web.apiKey,
+            authDomain: config.firebaseAuth.web.authDomain,
+            projectId: config.firebaseAuth.projectId,
+            providers: config.firebaseAuth.providers,
+            ...(workspaces ? { workspaces: true } : {}),
+          },
+        }
+      : {}),
     vault,
     logger,
   });
+  registerFirebaseRoutes(services, {
+    firebase: firebaseVerifier,
+    logger,
+  });
+  if (workspaces && firebaseVerifier) {
+    registerWorkspaceRoutes(services, {
+      firebase: firebaseVerifier,
+      workspaces: workspaces.hub,
+      logger,
+    });
+  }
+  registerGithubRoutes(services, {
+    github: config.github ? new GithubClient(config.github) : undefined,
+    vault,
+    logger,
+  });
+  registerPeopleRoutes(services, { vault, logger });
+  registerInviteRoutes(services);
   registerContentRoutes(services);
+  registerSchemaRoutes(services);
+  registerFileRoutes(services);
   registerOpsRoutes(services);
 
-  // The change feed: every change made here is numbered and queued for matching
-  // webhooks, in order.
-  const deliveries = metrics.counter(
-    'sethucms_webhook_deliveries_total',
-    'Webhook delivery attempts, by result (delivered, retry, dead).',
-  );
-  const worker =
-    config.worker === false
-      ? undefined
-      : new DeliveryWorker({
-          store: changes,
-          webhooks: () => store.read().webhooks,
-          vault,
-          guard: networkGuard,
-          logger,
-          results: deliveries,
-        });
-  // Chain appends so change numbers are assigned in the order events happen.
-  let feed: Promise<unknown> = Promise.resolve();
-  events.subscribeLocal((event) => {
-    feed = feed
-      .then(async () => {
-        const ids = Object.values(store.read().webhooks)
-          .filter((webhook) => matchesWebhook(webhook, event))
-          .map((webhook) => webhook.id);
-        await changes.append(event, ids);
-        if (ids.length > 0) {
-          worker?.nudge();
-        }
-      })
-      .catch((error: unknown) =>
-        logger.error({
-          event: 'changes.append_failed',
-          error: error instanceof Error ? error.message : 'unknown',
-        }),
-      );
-  });
-  // Another gateway queued a change: wake our delivery worker.
-  const stopOutbox = db?.listen(OUTBOX_CHANNEL, () => worker?.nudge());
-  registerChangeRoutes(services, {
+  const changeFeed = startChangeFeed({
+    config,
+    services,
+    metrics,
+    changes,
+    store,
     vault,
-    guard: networkGuard,
-    production: config.production,
-    onChange: () => worker?.nudge(),
+    networkGuard,
+    logger,
+    events,
+    db,
   });
-  worker?.start();
-
-  // Values read when a monitoring tool asks for them.
-  events.subscribe((event) => metrics.events.inc({ type: event.type }));
-  metrics.gauge(
-    'sethucms_event_streams_open',
-    'Open live event streams.',
-    () => services.streams.open,
-  );
-  metrics.gauge(
-    'sethucms_connections',
-    'Saved database connections, by adapter type.',
-    () => {
-      const byAdapter = new Map<string, number>();
-      for (const connection of registry.list()) {
-        byAdapter.set(
-          connection.adapterType,
-          (byAdapter.get(connection.adapterType) ?? 0) + 1,
-        );
-      }
-      return [...byAdapter].map(([adapter, value]) => ({
-        labels: { adapter },
-        value,
-      }));
-    },
-  );
-  metrics.gauge(
-    'sethucms_api_tokens_active',
-    'API tokens that are not revoked.',
-    () =>
-      Object.values(store.read().tokens).filter((token) => !token.revokedAt)
-        .length,
-  );
-  metrics.gauge(
-    'sethucms_audit_entries_total',
-    'Audit entries written since the gateway started.',
-    () => audit.written,
-    'counter',
-  );
+  registerGauges({ metrics, events, services, registry, store, audit });
 
   // ---- First start: make sure someone can sign in ---------------------
   const generatedAdminToken = await ensureAdmin(
@@ -652,56 +603,32 @@ async function assemble(
         sendJson(res, failure.status, failure.body, failure.headers);
       }
     } finally {
-      metrics.inFlight -= 1;
-      const ms = Date.now() - started;
-      const status = res.statusCode;
-      const streaming = String(res.getHeader('content-type') ?? '').startsWith(
-        'text/event-stream',
-      );
-      metrics.httpRequests.inc({
-        method: knownMethod(req.method),
-        route: routeLabel,
-        status: String(status),
-      });
-      if (!streaming) {
-        metrics.httpDuration.observe(
-          { method: knownMethod(req.method), route: routeLabel },
-          ms / 1000,
-        );
-      }
-
-      const slow = !streaming && ms >= slowMs;
-      // Auth failures and rate limits are logged at warn so abuse stands out.
-      const security = status === 401 || status === 403 || status === 429;
-      const level =
-        status >= 500
-          ? 'error'
-          : security || slow
-            ? 'warn'
-            : routeLabel === '/v1/health' || routeLabel === '/v1/ready'
-              ? 'debug'
-              : 'info';
-      // No query string (filters can hold personal data) and no body. The
-      // address is logged only
-      // for refused requests, where it is needed to spot abuse.
-      logger[level]({
-        event: 'http.request',
+      recordRequest({
+        metrics,
+        logger,
+        slowMs,
+        req,
+        res,
+        started,
+        routeLabel,
         requestId,
-        ...(traceId ? { traceId } : {}),
-        method: req.method,
-        path: (req.url ?? '').split('?')[0],
-        route: routeLabel,
-        status,
-        ms,
-        ...(slow ? { slow: true } : {}),
-        caller: principal?.id,
-        role: principal?.role,
-        ...(security ? { ip } : {}),
+        traceId,
+        principal,
+        ip,
       });
     }
   };
 
   const server = createServer((req, res) => {
+    // /w/<workspace>/... belongs to that workspace's own gateway.
+    if (workspaces && (req.url ?? '').startsWith('/w/')) {
+      void workspaces.hub.handle(req, res).then((done) => {
+        if (!done) {
+          void handle(req, res);
+        }
+      });
+      return;
+    }
     void handle(req, res);
   });
   // Timeouts and header limits blunt slow-client (slowloris) attacks.
@@ -714,7 +641,10 @@ async function assemble(
     server,
     services,
     generatedAdminToken,
-    flush: () => audit.flush(),
+    flush: async () => {
+      await audit.flush();
+      await workspaces?.hub.flush();
+    },
     listen: () =>
       new Promise((resolve, reject) => {
         server.once('error', reject);
@@ -730,10 +660,11 @@ async function assemble(
         // Long-lived event streams would keep the server open forever.
         setTimeout(() => server.closeAllConnections(), 2000).unref();
       });
+      await workspaces?.hub.close();
       await migrations.stop();
-      await feed;
-      await worker?.stop();
-      stopOutbox?.();
+      await changeFeed.drain();
+      await changeFeed.worker?.stop();
+      changeFeed.stopOutbox?.();
       await changes.close();
       await registry.closeAll();
       await audit.flush();
@@ -747,154 +678,3 @@ async function assemble(
   };
 }
 
-// ---------------------------------------------------------------------------
-
-/**
- * Make sure someone can sign in on first start.
- * @param auth Token service.
- * @param supplied Admin token from `SETHUCMS_ADMIN_TOKEN`, if any.
- * @param production Refuse to invent credentials when true.
- * @returns A generated token to show once, or undefined if none was made.
- * @throws Error for a malformed supplied token, or in production when no
- * admin exists and none was supplied.
- */
-async function ensureAdmin(
-  auth: Authenticator,
-  supplied: string | undefined,
-  production: boolean,
-): Promise<string | undefined> {
-  if (supplied) {
-    if (!ADMIN_TOKEN_PATTERN.test(supplied)) {
-      throw new Error(
-        'SETHUCMS_ADMIN_TOKEN must be 32 to 200 characters of A-Z a-z 0-9 _ - .  (create one with: openssl rand -hex 32)',
-      );
-    }
-    try {
-      // If this token is not known yet, the catch below registers it. Only the
-      // hash is stored, as for every token.
-      auth.authenticate(`Bearer ${supplied}`);
-    } catch {
-      await auth.create('Bootstrap admin', 'admin', supplied);
-    }
-    return undefined;
-  }
-  if (auth.hasActiveAdmin()) {
-    return undefined;
-  }
-  if (production) {
-    throw new Error(
-      'No admin exists. Set SETHUCMS_ADMIN_TOKEN for the first start.',
-    );
-  }
-  // Development convenience only; production must supply its own token.
-  return (await auth.create('Local admin', 'admin')).token;
-}
-
-/**
- * Caller address used for rate limiting and abuse logs.
- * Honours X-Forwarded-For only when `trustProxy` is set; otherwise any client
- * could pick its own address and escape the IP limit.
- */
-function clientIp(req: IncomingMessage, trustProxy: boolean): string {
-  if (trustProxy) {
-    const forwarded = req.headers['x-forwarded-for'];
-    const first = (Array.isArray(forwarded) ? forwarded[0] : forwarded)
-      ?.split(',')[0]
-      ?.trim();
-    if (first) {
-      return first.slice(0, 64);
-    }
-  }
-  return req.socket.remoteAddress ?? 'unknown';
-}
-
-/**
- * Echo the Origin back only when it is on the allow list. Never use "*",
- * because requests carry bearer tokens.
- */
-function applyCors(
-  req: IncomingMessage,
-  res: ServerResponse,
-  allowed: Set<string>,
-): void {
-  // Tell caches the response depends on Origin.
-  res.setHeader('Vary', 'Origin');
-  const origin = req.headers['origin'];
-  if (typeof origin !== 'string' || !allowed.has(origin)) {
-    return;
-  }
-  res.setHeader('Access-Control-Allow-Origin', origin);
-  res.setHeader(
-    'Access-Control-Allow-Methods',
-    'GET, POST, PATCH, PUT, DELETE, OPTIONS',
-  );
-  res.setHeader(
-    'Access-Control-Allow-Headers',
-    'Authorization, Content-Type, Idempotency-Key',
-  );
-  res.setHeader(
-    'Access-Control-Expose-Headers',
-    'X-Request-Id, Retry-After, Idempotent-Replay',
-  );
-}
-
-/** HTTP methods allowed as metric labels. */
-const KNOWN_METHODS = new Set([
-  'GET',
-  'POST',
-  'PATCH',
-  'PUT',
-  'DELETE',
-  'HEAD',
-  'OPTIONS',
-]);
-/**
- * Map unknown methods to "OTHER" so attackers cannot create unlimited
- * metric label values (cardinality blow-up).
- */
-const knownMethod = (method: string | undefined): string =>
-  method && KNOWN_METHODS.has(method) ? method : 'OTHER';
-
-/**
- * The trace id from a W3C `traceparent` header (00-<trace id>-<span
- * id>-<flags>), or undefined.
- */
-function traceIdOf(header: string | string[] | undefined): string | undefined {
-  const value = Array.isArray(header) ? header[0] : header;
-  const match = /^[0-9a-f]{2}-([0-9a-f]{32})-[0-9a-f]{16}-[0-9a-f]{2}$/.exec(
-    value ?? '',
-  );
-  return match && match[1] !== '0'.repeat(32) ? match[1] : undefined;
-}
-
-/**
- * Log server faults with their internal cause; expected client errors are
- * skipped.
- */
-function logIfUnexpected(
-  logger: Logger,
-  error: unknown,
-  requestId: string,
-): void {
-  if (isSethuError(error) && error.code !== 'INTERNAL') {
-    return;
-  }
-  // Server-side only: the cause can contain database messages that clients must
-  // never see.
-  const cause =
-    error instanceof Error
-      ? error.cause instanceof Error
-        ? error.cause
-        : error
-      : undefined;
-  logger.error({
-    event: 'error.unexpected',
-    requestId,
-    message: 'Unexpected error',
-    error: cause?.message,
-    stack: cause?.stack,
-  });
-}
-
-// Re-exported so tests and tools can check the standard headers.
-export { API_SECURITY_HEADERS };

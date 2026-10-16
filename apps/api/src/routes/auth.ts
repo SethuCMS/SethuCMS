@@ -5,6 +5,7 @@
  *                                 to decide whether to show its button)
  *   GET  /v1/auth/oidc/login      send the browser to the identity provider
  *   GET  /v1/auth/oidc/callback   the provider sends the browser back here
+ *   (GitHub has its own pair of routes in routes/github.ts)
  *   POST /v1/auth/logout          end a single sign-on session
  *
  * The login attempt (state, nonce, PKCE verifier) lives in a short-lived,
@@ -42,9 +43,22 @@ interface Pending {
 
 export function registerAuthRoutes(
   s: Services,
-  deps: { oidc: OidcClient | undefined; vault: Vault; logger: Logger },
+  deps: {
+    oidc: OidcClient | undefined;
+    /** True when sign-in with GitHub is set up (routes/github.ts). */
+    github?: boolean;
+    /** Public Firebase web settings when Firebase sign-in is set up. */
+    firebase?: { apiKey: string; authDomain: string; projectId: string; providers: string[]; workspaces?: boolean };
+    vault: Vault;
+    logger: Logger;
+  },
 ): void {
-  const { oidc, vault, logger } = deps;
+  const { oidc, github, firebase, vault, logger } = deps;
+  // Google gets its own button in the admin app; any other provider gets a
+  // generic one.
+  const google = oidc
+    ? new URL(oidc.config.issuer).hostname === 'accounts.google.com'
+    : false;
 
   s.router.add({
     method: 'GET',
@@ -53,10 +67,20 @@ export function registerAuthRoutes(
     handler: () => ({
       status: 200,
       body: {
+        // The admin app shows the authenticator-code form first once at least
+        // one person has been added.
+        totp: { enabled: Object.keys(s.store.read().people).length > 0 },
         oidc: {
           enabled: Boolean(oidc),
           ...(oidc ? { loginPath: '/v1/auth/oidc/login' } : {}),
+          ...(google ? { provider: 'google' } : {}),
         },
+        ...(firebase
+          ? { firebase: { enabled: true, loginPath: '/v1/auth/firebase', ...firebase } }
+          : {}),
+        ...(github
+          ? { github: { enabled: true, loginPath: '/v1/auth/github/login' } }
+          : {}),
       },
     }),
   });
@@ -236,7 +260,7 @@ export function registerAuthRoutes(
   });
 }
 
-function readCookie(req: IncomingMessage, name: string): string | undefined {
+export function readCookie(req: IncomingMessage, name: string): string | undefined {
   for (const part of (req.headers['cookie'] ?? '').split(';')) {
     const [key, ...rest] = part.trim().split('=');
     if (key === name) {
@@ -246,7 +270,7 @@ function readCookie(req: IncomingMessage, name: string): string | undefined {
   return undefined;
 }
 
-function constantEquals(a: string, b: string): boolean {
+export function constantEquals(a: string, b: string): boolean {
   if (a.length !== b.length) {
     return false;
   }

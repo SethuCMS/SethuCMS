@@ -1,3 +1,4 @@
+import type { LoadedSchema } from '../schema/code.js';
 import type { AuditLog } from '../audit.js';
 import type { Authenticator } from '../auth.js';
 import type { ConnectionRegistry } from '../connections/registry.js';
@@ -26,6 +27,8 @@ export interface Services {
   migrations: MigrationManager;
   /** The numbered change feed and the webhook delivery queue. */
   changes: ChangeStore;
+  /** The schema file, when one is configured. */
+  schema?: LoadedSchema | undefined;
   /** Optional separate token for metrics scrapers. */
   metricsToken: string | undefined;
 }

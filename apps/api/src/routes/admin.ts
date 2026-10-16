@@ -177,6 +177,28 @@ export function registerAdminRoutes(s: Services): void {
     },
   });
 
+  // Declare a new, empty collection (Firestore). The database creates it with
+  // its first record, so only its definition is saved. Not offered for SQL.
+  router.add({
+    method: 'POST',
+    pattern: '/v1/admin/connections/:connectionId/collections',
+    auth: 'token',
+    idempotent: true,
+    handler: async (ctx) => {
+      requireRole(ctx.principal, 'admin');
+      const input = await ctx.json();
+      if (!isPlainObject(input)) {
+        throw errors.validation('Body must be a JSON object');
+      }
+      const updated = await s.registry.createCollection(
+        ctx.params['connectionId'] as string,
+        input,
+        ctx.principal.id,
+      );
+      return { status: 201, body: { data: await detail(s, updated) } };
+    },
+  });
+
   // Exposing a collection is what makes it reachable through the content
   // API; nothing is public until an admin turns it on.
   router.add({
@@ -638,6 +660,8 @@ async function detail(s: Services, connection: StoredConnection) {
     health: health.status,
     ...((error ?? health.note) ? { healthNote: error ?? health.note } : {}),
     lastCheckedAt: health.at,
+    // Whether the admin panel should offer "Create collection".
+    canCreateCollections: s.registry.canCreateCollections(connection),
     createdAt: connection.createdAt,
     updatedAt: connection.updatedAt,
     capabilities,

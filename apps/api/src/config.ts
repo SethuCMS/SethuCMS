@@ -3,6 +3,11 @@
  * build runs on a laptop, in Docker and in Kubernetes.
  */
 import type { OidcConfig } from './security/oidc.js';
+import type { GithubConfig } from './security/github.js';
+import {
+  FIREBASE_JWKS_URL,
+  type FirebaseAuthConfig,
+} from './security/firebase.js';
 import { parseLogLevel, type LogFormat, type LogLevel } from './logger.js';
 
 /** Resolved gateway settings. Build with {@link configFromEnv}. */
@@ -78,6 +83,15 @@ export interface GatewayConfig {
    * Single sign-on with OpenID Connect. Off unless SETHUCMS_OIDC_ISSUER is set.
    */
   oidc?: OidcConfig;
+  /**
+   * Sign in with GitHub. Off unless SETHUCMS_GITHUB_CLIENT_ID is set.
+   */
+  github?: GithubConfig;
+  /**
+   * Sign in through Firebase Authentication (Google, GitHub). Off unless
+   * SETHUCMS_FIREBASE_AUTH_PROJECT is set.
+   */
+  firebaseAuth?: FirebaseAuthConfig;
   /**
    * Keep the gateway's state in Firestore instead of files or PostgreSQL.
    * Set with SETHUCMS_FIRESTORE_PROJECT. One gateway process at a time (a
@@ -200,6 +214,8 @@ export function configFromEnv(env: NodeJS.ProcessEnv): GatewayConfig {
     ...metrics(env['SETHUCMS_METRICS_TOKEN']),
     ...shared(env),
     ...oidc(env, production),
+    ...github(env, production),
+    ...firebaseAuth(env),
     worker: flag(env['SETHUCMS_WORKER'], true),
     ...firestoreState(env),
   };
@@ -312,6 +328,14 @@ function oidc(
   production: boolean,
 ): { oidc?: OidcConfig } {
   const issuer = env['SETHUCMS_OIDC_ISSUER'];
+  if (env['SETHUCMS_GOOGLE_CLIENT_ID']) {
+    if (issuer) {
+      throw new Error(
+        'Set SETHUCMS_OIDC_ISSUER or SETHUCMS_GOOGLE_CLIENT_ID, not both: the gateway has one OpenID Connect provider',
+      );
+    }
+    return { oidc: google(env, production) };
+  }
   if (!issuer) {
     return {};
   }
@@ -384,6 +408,199 @@ function oidc(
         168,
       ),
       adminUrl: env['SETHUCMS_ADMIN_URL'] || `${publicUrl}/`,
+    },
+  };
+}
+
+/** The public address of this gateway, which the sign-in redirect points back to. */
+function publicBase(
+  env: NodeJS.ProcessEnv,
+  production: boolean,
+  because: string,
+): string {
+  const value = env['SETHUCMS_PUBLIC_URL'];
+  if (!value) {
+    throw new Error(`SETHUCMS_PUBLIC_URL is required when ${because}`);
+  }
+  const base = value.replace(/\/+$/, '');
+  if (production && !base.startsWith('https://')) {
+    throw new Error(
+      'SETHUCMS_PUBLIC_URL must start with https:// in production',
+    );
+  }
+  return base;
+}
+
+/**
+ * Sign in with Google, the short way. Google is an OpenID Connect provider, so
+ * this fills in the same settings as SETHUCMS_OIDC_* would. Google has no
+ * groups, so people are listed by e-mail address:
+ *
+ *   SETHUCMS_GOOGLE_CLIENT_ID / SETHUCMS_GOOGLE_CLIENT_SECRET   from Google Cloud
+ *   SETHUCMS_GOOGLE_ADMINS / _EDITORS / _VIEWERS                comma-separated e-mails
+ *   SETHUCMS_GOOGLE_DOMAINS                                     optional: only these domains
+ *
+ * An address counts only when Google reports it as verified.
+ */
+function google(env: NodeJS.ProcessEnv, production: boolean): OidcConfig {
+  const base = publicBase(
+    env,
+    production,
+    'SETHUCMS_GOOGLE_CLIENT_ID is set',
+  );
+  const secret = env['SETHUCMS_GOOGLE_CLIENT_SECRET'];
+  if (!secret) {
+    throw new Error(
+      'SETHUCMS_GOOGLE_CLIENT_SECRET is required when SETHUCMS_GOOGLE_CLIENT_ID is set',
+    );
+  }
+  const people = (name: string): string[] =>
+    csv(env[name]).map((item) => item.toLowerCase());
+  const roles = {
+    admin: people('SETHUCMS_GOOGLE_ADMINS'),
+    editor: people('SETHUCMS_GOOGLE_EDITORS'),
+    viewer: people('SETHUCMS_GOOGLE_VIEWERS'),
+  };
+  if (roles.admin.length + roles.editor.length + roles.viewer.length === 0) {
+    throw new Error(
+      'Google sign-in needs at least one e-mail address in SETHUCMS_GOOGLE_ADMINS, SETHUCMS_GOOGLE_EDITORS or SETHUCMS_GOOGLE_VIEWERS, or nobody could sign in',
+    );
+  }
+  return {
+    issuer: 'https://accounts.google.com',
+    clientId: env['SETHUCMS_GOOGLE_CLIENT_ID'] as string,
+    clientSecret: secret,
+    redirectUri: `${base}/v1/auth/oidc/callback`,
+    scopes: 'openid email profile',
+    roleClaim: 'email',
+    roles,
+    allowedDomains: people('SETHUCMS_GOOGLE_DOMAINS'),
+    sessionHours: whole(
+      'SETHUCMS_OIDC_SESSION_HOURS',
+      env['SETHUCMS_OIDC_SESSION_HOURS'],
+      8,
+      1,
+      168,
+    ),
+    adminUrl: env['SETHUCMS_ADMIN_URL'] || `${base}/`,
+  };
+}
+
+/**
+ * Sign in with GitHub. Off unless SETHUCMS_GITHUB_CLIENT_ID is set.
+ *
+ *   SETHUCMS_GITHUB_CLIENT_ID / SETHUCMS_GITHUB_CLIENT_SECRET   from the OAuth app
+ *   SETHUCMS_GITHUB_ADMINS / _EDITORS / _VIEWERS                user names or id:<number>
+ *
+ * There is no default role: someone who is not listed is refused, because
+ * anyone in the world can have a GitHub account.
+ */
+function github(
+  env: NodeJS.ProcessEnv,
+  production: boolean,
+): { github?: GithubConfig } {
+  const clientId = env['SETHUCMS_GITHUB_CLIENT_ID'];
+  if (!clientId) {
+    return {};
+  }
+  const base = publicBase(env, production, 'SETHUCMS_GITHUB_CLIENT_ID is set');
+  const clientSecret = env['SETHUCMS_GITHUB_CLIENT_SECRET'];
+  if (!clientSecret) {
+    throw new Error(
+      'SETHUCMS_GITHUB_CLIENT_SECRET is required when SETHUCMS_GITHUB_CLIENT_ID is set',
+    );
+  }
+  const roles = {
+    admin: csv(env['SETHUCMS_GITHUB_ADMINS']),
+    editor: csv(env['SETHUCMS_GITHUB_EDITORS']),
+    viewer: csv(env['SETHUCMS_GITHUB_VIEWERS']),
+  };
+  if (roles.admin.length + roles.editor.length + roles.viewer.length === 0) {
+    throw new Error(
+      'GitHub sign-in needs at least one name in SETHUCMS_GITHUB_ADMINS, SETHUCMS_GITHUB_EDITORS or SETHUCMS_GITHUB_VIEWERS, or nobody could sign in',
+    );
+  }
+  for (const entry of Object.values(roles).flat()) {
+    if (!/^(id:[0-9]+|[A-Za-z0-9-]{1,39})$/.test(entry)) {
+      throw new Error(
+        `"${entry}" is not a GitHub user name or id:<number> (in SETHUCMS_GITHUB_ADMINS, _EDITORS or _VIEWERS)`,
+      );
+    }
+  }
+  return {
+    github: {
+      clientId,
+      clientSecret,
+      redirectUri: `${base}/v1/auth/github/callback`,
+      roles,
+      sessionHours: whole(
+        'SETHUCMS_GITHUB_SESSION_HOURS',
+        env['SETHUCMS_GITHUB_SESSION_HOURS'],
+        8,
+        1,
+        168,
+      ),
+      adminUrl: env['SETHUCMS_ADMIN_URL'] || `${base}/`,
+      webUrl: env['SETHUCMS_GITHUB_URL'] || 'https://github.com',
+      apiUrl: env['SETHUCMS_GITHUB_API_URL'] || 'https://api.github.com',
+    },
+  };
+}
+
+/**
+ * Sign in through Firebase Authentication. Off unless
+ * SETHUCMS_FIREBASE_AUTH_PROJECT is set.
+ *
+ *   SETHUCMS_FIREBASE_AUTH_PROJECT   Firebase project id
+ *   SETHUCMS_FIREBASE_AUTH_API_KEY   the project's public web API key
+ *   SETHUCMS_FIREBASE_AUTH_DOMAIN    optional, default <project>.firebaseapp.com
+ *   SETHUCMS_FIREBASE_ADMINS / _EDITORS / _VIEWERS   e-mails or uid:<uid>
+ *   SETHUCMS_FIREBASE_DOMAINS        optional: only these e-mail domains
+ *   SETHUCMS_FIREBASE_PROVIDERS      default google.com,github.com
+ */
+function firebaseAuth(env: NodeJS.ProcessEnv): { firebaseAuth?: FirebaseAuthConfig } {
+  const projectId = env['SETHUCMS_FIREBASE_AUTH_PROJECT'];
+  if (!projectId) {
+    return {};
+  }
+  const apiKey = env['SETHUCMS_FIREBASE_AUTH_API_KEY'];
+  if (!apiKey) {
+    throw new Error(
+      'SETHUCMS_FIREBASE_AUTH_API_KEY is required when SETHUCMS_FIREBASE_AUTH_PROJECT is set',
+    );
+  }
+  const lower = (name: string): string[] =>
+    csv(env[name]).map((item) => item.toLowerCase());
+  const roles = {
+    admin: lower('SETHUCMS_FIREBASE_ADMINS'),
+    editor: lower('SETHUCMS_FIREBASE_EDITORS'),
+    viewer: lower('SETHUCMS_FIREBASE_VIEWERS'),
+  };
+  if (roles.admin.length + roles.editor.length + roles.viewer.length === 0) {
+    throw new Error(
+      'Firebase sign-in needs at least one entry in SETHUCMS_FIREBASE_ADMINS, SETHUCMS_FIREBASE_EDITORS or SETHUCMS_FIREBASE_VIEWERS, or nobody could sign in',
+    );
+  }
+  const providers = csv(env['SETHUCMS_FIREBASE_PROVIDERS']);
+  return {
+    firebaseAuth: {
+      projectId,
+      web: {
+        apiKey,
+        authDomain:
+          env['SETHUCMS_FIREBASE_AUTH_DOMAIN'] || `${projectId}.firebaseapp.com`,
+      },
+      roles,
+      allowedDomains: lower('SETHUCMS_FIREBASE_DOMAINS'),
+      providers: providers.length > 0 ? providers : ['google.com', 'github.com'],
+      sessionHours: whole(
+        'SETHUCMS_FIREBASE_SESSION_HOURS',
+        env['SETHUCMS_FIREBASE_SESSION_HOURS'],
+        8,
+        1,
+        168,
+      ),
+      jwksUrl: FIREBASE_JWKS_URL,
     },
   };
 }

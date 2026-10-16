@@ -131,7 +131,7 @@ export function assertSecureUrl(value: string, what: string): URL {
  * Redirects are refused so a provider (or attacker) cannot bounce us to an
  * internal address, and the cap stops memory exhaustion.
  */
-async function fetchLimited(
+export async function fetchLimited(
   url: string,
   init: RequestInit = {},
 ): Promise<{ status: number; text: string }> {
@@ -167,7 +167,7 @@ async function fetchLimited(
 }
 
 /** Fetch and parse JSON, turning any failure into an OidcError. */
-async function fetchJson(url: string, init?: RequestInit): Promise<any> {
+export async function fetchJson(url: string, init?: RequestInit): Promise<any> {
   const { status, text } = await fetchLimited(url, init);
   if (status < 200 || status >= 300) {
     throw new OidcError('provider', `The identity provider answered ${status}`);
@@ -335,7 +335,7 @@ export class OidcClient {
     }
 
     const claims = await this.verifyIdToken(tokens.id_token, input.nonce);
-    let roleValues = valuesOf(claims[this.config.roleClaim]);
+    let roleValues = this.roleValuesOf(claims);
     // Some providers keep groups out of the ID token. Ask the userinfo
     // endpoint, and only trust it for the same subject.
     if (
@@ -352,7 +352,7 @@ export class OidcClient {
       // Reject userinfo for a different subject: it could belong to someone
       // else if tokens were mixed up.
       if (info.sub === claims.sub) {
-        roleValues = valuesOf(info[this.config.roleClaim]);
+        roleValues = this.roleValuesOf({ ...info, email_verified: claims.email_verified });
       }
     }
     return { claims, roleValues };
@@ -463,6 +463,21 @@ export class OidcClient {
       );
     }
     return claims;
+  }
+
+  /**
+   * The values in the role claim. When roles are given by e-mail address (the
+   * way to do it with Google, which has no groups), the address only counts if
+   * the provider says it is verified, and the comparison ignores case.
+   */
+  private roleValuesOf(claims: Record<string, unknown>): string[] {
+    const values = valuesOf(claims[this.config.roleClaim]);
+    if (this.config.roleClaim !== 'email') {
+      return values;
+    }
+    return claims['email_verified'] === true
+      ? values.map((value) => value.toLowerCase())
+      : [];
   }
 
   /** Decide the role, or null when this person may not sign in. */

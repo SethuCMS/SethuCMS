@@ -96,7 +96,12 @@ export function registerContentRoutes(s: Services): void {
       );
       return {
         status: 200,
-        body: { data: describeCollection(ctx.principal, bound, collection) },
+        body: {
+          data: {
+            ...describeCollection(ctx.principal, bound, collection),
+            canStoreFiles: s.registry.canStoreFiles(bound.connection),
+          },
+        },
       };
     },
   });
@@ -528,12 +533,14 @@ function describeCollection(
       .filter((field) => read.fieldRead.get(field.name) !== 'hide')
       .map((field) => ({
         ...field,
+        ...uiFor(bound, collection.name, field.name),
         masked: read.fieldRead.get(field.name) === 'mask',
         editable:
           writable.get(field.name) === 'allow' &&
           field.generated !== true &&
           field.readOnly !== true,
       })),
+    ...collectionUi(bound, collection.name),
     relations: collection.relations,
     access: {
       create: can('create'),
@@ -542,5 +549,25 @@ function describeCollection(
     },
     capabilities: capabilitySummary(bound.adapterCapabilities),
     mode: bound.connection.mode,
+  };
+}
+
+/** The schema file's wishes for one field: label, editor, hidden. */
+function uiFor(bound: Bound, collection: string, field: string) {
+  const mark = bound.ui.get(collection)?.fields.get(field);
+  return mark && Object.keys(mark).length > 0 ? { ui: mark } : {};
+}
+
+/** The schema file's title and title field for a collection. */
+function collectionUi(bound: Bound, collection: string) {
+  const entry = bound.ui.get(collection);
+  if (!entry || (!entry.title && !entry.titleField)) {
+    return {};
+  }
+  return {
+    ui: {
+      ...(entry.title ? { title: entry.title } : {}),
+      ...(entry.titleField ? { titleField: entry.titleField } : {}),
+    },
   };
 }

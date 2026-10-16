@@ -8,72 +8,39 @@
  * Many connections can be live at the same time, each with its own adapter,
  * connection pool, capabilities and exposed collections.
  */
+import { applySchema } from '../schema/code.js';
 import { randomUUID } from 'node:crypto';
 import { GuardedAdapter, type Adapter } from '@sethucms/adapter-sdk';
 import {
   ContentModel,
-  CursorCodec,
   applyReadOnly,
   errors,
   isSethuError,
-  isPlainObject,
-  isSensitiveKey,
-  type Capabilities,
+  unknownKeys,
   type CollectionDefinition,
 } from '@sethucms/core';
-import type { AuditLog } from '../audit.js';
-import type { EventBus } from '../events.js';
-import type { NetworkGuard } from '../security/network-guard.js';
-import type { Vault } from '../security/vault.js';
-import type {
-  ConnectionMode,
-  StateStore,
-  StoredConnection,
-} from '../store/state.js';
+import type { ConnectionMode, StoredConnection } from '../store/state.js';
 import { assertPlainConfig, type AdapterKind } from './adapters.js';
 
-/** Last known state of a connection; `pending` means never checked. */
-export type Health = 'healthy' | 'error' | 'pending';
+import {
+  buildCollection,
+  cleanConfig,
+  exposedSubset,
+  parseMode,
+  requireText,
+  safeMessage,
+  seedAdapter,
+} from './registry-helpers.js';
+import {
+  MAX_CONNECTIONS,
+  type Bound,
+  type Health,
+  type Live,
+  type RegistryDeps,
+} from './registry-types.js';
 
-/**
- * A connection ready for request handlers: the guarded adapter plus the
- * content model limited to exposed collections.
- */
-export interface Bound {
-  connection: StoredConnection;
-  guarded: GuardedAdapter;
-  /** Only the collections editors may see. */
-  model: ContentModel;
-  /** Everything found in the database, exposed or not. */
-  discovered: CollectionDefinition[];
-  /** What the connection can do right now (writes are off when read-only). */
-  capabilities: Capabilities;
-  /** What the database adapter can do, regardless of the connection mode. */
-  adapterCapabilities: Capabilities;
-}
-
-// An open adapter and its cached schema snapshot.
-interface Live {
-  adapter: Adapter;
-  discovered: CollectionDefinition[];
-}
-
-/** Everything the registry needs; injected for testing. */
-export interface RegistryDeps {
-  store: StateStore;
-  vault: Vault;
-  cursors: CursorCodec;
-  kinds: Record<string, AdapterKind>;
-  networkGuard: NetworkGuard;
-  audit: AuditLog;
-  events: EventBus;
-  /** Longest a single database call may take. */
-  timeoutMs?: number;
-}
-
-// Bounds memory and open database pools.
-const MAX_CONNECTIONS = 50;
-
+export type { Bound, Health, RegistryDeps } from './registry-types.js';
+export { isPlainObject, safeMessage } from './registry-helpers.js';
 /**
  * Owns every configured database connection: saving, opening, caching and
  * closing adapters.
@@ -137,9 +104,14 @@ export class ConnectionRegistry {
   async bind(id: string): Promise<Bound> {
     const connection = this.require(id);
     const live = await this.open(id);
+    await this.catchUp(connection, live);
 
     const exposed = new Set(connection.exposed);
-    const model = new ContentModel(exposedSubset(live.discovered, exposed));
+    const applied = applySchema(
+      exposedSubset(live.discovered, exposed),
+      this.deps.schema,
+    );
+    const model = new ContentModel(applied.collections);
     const guarded = new GuardedAdapter({
       adapter: live.adapter,
       model,
@@ -158,6 +130,8 @@ export class ConnectionRegistry {
         connection.mode !== 'read_write',
       ),
       adapterCapabilities: live.adapter.capabilities(),
+      ui: applied.ui,
+      schemaNotes: applied.notes,
     };
   }
 
@@ -387,6 +361,104 @@ export class ConnectionRegistry {
     return updated;
   }
 
+  /** Can an administrator declare a new, empty collection on this connection? */
+  canCreateCollections(connection: StoredConnection): boolean {
+    const kind = Object.hasOwn(this.deps.kinds, connection.adapterType)
+      ? this.deps.kinds[connection.adapterType]
+      : undefined;
+    return (
+      connection.mode === 'read_write' && Boolean(kind?.declareCollections)
+    );
+  }
+
+  /** Can editors upload images and PDFs to this connection? */
+  canStoreFiles(connection: StoredConnection): boolean {
+    const kind = Object.hasOwn(this.deps.kinds, connection.adapterType)
+      ? this.deps.kinds[connection.adapterType]
+      : undefined;
+    return connection.mode === 'read_write' && Boolean(kind?.files);
+  }
+
+  /**
+   * Declare a new, empty collection on a database that brings collections into
+   * being with their first record (Firestore). Only the definition is saved in
+   * the database; nothing else is touched.
+   *
+   * Refused on read-only connections and on database types that need real
+   * tables (SQL): creating those stays a migration-only step.
+   *
+   * @param input `{ name, fields?: [{ name, type, required? }], expose? }`.
+   *   `expose` defaults to true, because an administrator who creates a
+   *   collection by hand wants to use it.
+   * @throws A validation error for a bad name or field; a conflict if the name
+   *   is taken.
+   */
+  async createCollection(
+    id: string,
+    input: Record<string, unknown>,
+    actor: string,
+  ): Promise<StoredConnection> {
+    const connection = this.require(id);
+    const declare = this.kind(connection.adapterType).declareCollections;
+    if (!declare) {
+      throw errors.unsupported(
+        'This database type creates collections another way. Use Move data to create them.',
+      );
+    }
+    if (connection.mode !== 'read_write') {
+      throw errors.readOnly();
+    }
+    for (const key of unknownKeys(input, ['name', 'fields', 'expose'])) {
+      throw errors.validation(`Unknown setting: ${key}`);
+    }
+    if (input['expose'] !== undefined && typeof input['expose'] !== 'boolean') {
+      throw errors.validation('expose must be true or false');
+    }
+    const expose = input['expose'] !== false;
+    const definition = buildCollection(input, declare.keyField);
+
+    const live = await this.open(id);
+    if (typeof live.adapter.createCollection !== 'function') {
+      throw errors.unsupported('This connection cannot create collections');
+    }
+    // Look again first: another gateway may have made it a moment ago.
+    live.discovered = await live.adapter.introspect();
+    if (live.discovered.some((found) => found.name === definition.name)) {
+      throw errors.conflict('A collection with this name already exists');
+    }
+    try {
+      await live.adapter.createCollection(definition);
+    } catch (error) {
+      throw isSethuError(error)
+        ? error
+        : errors.connectionFailed('Could not create the collection');
+    }
+    live.discovered = await live.adapter.introspect();
+    live.checkedAt = Date.now();
+
+    const updated = await this.deps.store.update((state) => {
+      const stored = state.connections[id];
+      if (!stored) {
+        throw errors.notFound('Connection not found');
+      }
+      if (expose) {
+        stored.exposed = [...new Set([...stored.exposed, definition.name])];
+      }
+      // Made on purpose, so it needs no review.
+      stored.known = [...new Set([...stored.known, definition.name])];
+      stored.updatedAt = new Date().toISOString();
+      return structuredClone(stored);
+    });
+    this.deps.audit.record({
+      actor,
+      operation: 'collection.create',
+      target: `${id}/${definition.name}`,
+      detail: { fields: definition.fields.length, exposed: expose },
+    });
+    this.deps.events.publish({ type: 'connection.changed', connectionId: id });
+    return updated;
+  }
+
   /** Read the database structure again, for example after a migration. */
   async refresh(id: string, actor: string): Promise<StoredConnection> {
     const current = this.require(id);
@@ -488,6 +560,38 @@ export class ConnectionRegistry {
   /** Is this connection open right now? (Does not open it.) */
   isOpen(id: string): boolean {
     return this.live.has(id);
+  }
+
+  /**
+   * A collection can be declared through another gateway instance (several can
+   * share one state). If the shared settings expose a collection this instance
+   * has not seen, read the structure again, at most once every 10 seconds.
+   * Only for databases where collections can be declared.
+   */
+  private async catchUp(
+    connection: StoredConnection,
+    live: Live,
+  ): Promise<void> {
+    const kind = Object.hasOwn(this.deps.kinds, connection.adapterType)
+      ? this.deps.kinds[connection.adapterType]
+      : undefined;
+    if (!kind?.declareCollections) {
+      return;
+    }
+    const seen = new Set(live.discovered.map((collection) => collection.name));
+    if (connection.exposed.every((name) => seen.has(name))) {
+      return;
+    }
+    const now = Date.now();
+    if (now - (live.checkedAt ?? 0) < 10_000) {
+      return;
+    }
+    live.checkedAt = now;
+    try {
+      live.discovered = await live.adapter.introspect();
+    } catch {
+      // Keep what we had; the next request tries again.
+    }
   }
 
   // Single-flight open: concurrent callers share one attempt.
@@ -592,104 +696,3 @@ export class ConnectionRegistry {
     return kind;
   }
 }
-
-// ---------------------------------------------------------------------------
-
-/** Insert demo records into an empty adapter. */
-async function seedAdapter(
-  adapter: Adapter,
-  seed: Record<string, Array<Record<string, unknown>>>,
-): Promise<void> {
-  const collections = new Map(
-    (await adapter.introspect()).map((collection) => [
-      collection.name,
-      collection,
-    ]),
-  );
-  for (const [name, records] of Object.entries(seed)) {
-    const collection = collections.get(name);
-    if (!collection) {
-      continue;
-    }
-    for (const record of records) {
-      await adapter.create(collection, record);
-    }
-  }
-}
-
-/**
- * Keep only the exposed collections. Links to collections that are hidden are
- * removed, so the content model never points at something editors cannot see.
- */
-function exposedSubset(
-  all: CollectionDefinition[],
-  exposed: Set<string>,
-): CollectionDefinition[] {
-  return all
-    .filter((collection) => exposed.has(collection.name))
-    .map((collection) => ({
-      ...collection,
-      fields: collection.fields.map((field) => {
-        if (field.references && !exposed.has(field.references)) {
-          const { references: _removed, ...rest } = field;
-          return rest;
-        }
-        return field;
-      }),
-      relations: collection.relations.filter((relation) =>
-        exposed.has(relation.target),
-      ),
-    }));
-}
-
-/** Require 1..max chars of plain text with no control characters. */
-function requireText(value: unknown, name: string, max: number): string {
-  if (
-    typeof value !== 'string' ||
-    value.trim().length === 0 ||
-    value.length > max ||
-    /[\u0000-\u001f]/.test(value)
-  ) {
-    throw errors.validation(
-      `${name} must be 1 to ${max} characters of plain text`,
-    );
-  }
-  return value.trim();
-}
-
-/** Parse the mode; unset means read-only. */
-function parseMode(value: unknown): ConnectionMode {
-  if (value === undefined) {
-    return 'read_only';
-  } // safe by default
-  if (value === 'read_only' || value === 'read_write') {
-    return value;
-  }
-  throw errors.validation('mode must be "read_only" or "read_write"');
-}
-
-/**
- * Settings may not carry secrets: they are shown in the admin and written to
- * the audit log.
- */
-function cleanConfig(value: unknown): Record<string, unknown> {
-  const config = value === undefined ? {} : assertPlainConfig(value);
-  for (const key of Object.keys(config)) {
-    if (isSensitiveKey(key)) {
-      throw errors.validation(`Put "${key}" in credentials, not config`);
-    }
-  }
-  if (JSON.stringify(config).length > 20_000) {
-    throw errors.validation('config is too large');
-  }
-  return config;
-}
-
-/** A message that is safe to show to anyone who can see the connection. */
-export function safeMessage(error: unknown): string {
-  return isSethuError(error) && error.code !== 'INTERNAL'
-    ? error.message
-    : 'Could not connect to the database';
-}
-
-export { isPlainObject };
