@@ -5,6 +5,7 @@ import { type Server } from 'node:http';
 import type { GatewayConfig } from '../config.js';
 import { type AdapterKind } from '../connections/adapters.js';
 import { type Logger } from '../logger.js';
+import { type ProjectsHub } from '../routes/projects.js';
 import { type Services } from '../routes/services.js';
 import { type FirestoreLike } from '../store/firestore.js';
 
@@ -31,6 +32,8 @@ export interface GatewayOptions {
   resolveHost?: (host: string) => Promise<string[]>;
   /** Override rate limits (tests). */
   rateLimit?: { capacity: number; refillPerSecond: number };
+  /** Set for workspace gateways: this workspace's id and the project hub. */
+  project?: { id: string; hub: ProjectsHub };
 }
 
 export interface Gateway {

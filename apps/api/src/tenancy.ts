@@ -14,7 +14,7 @@
  * carries a signature, so an invented id is refused without any lookup and
  * nobody can make the server create workspaces by guessing addresses.
  */
-import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Gateway } from './gateway.js';
 
@@ -55,6 +55,12 @@ export class Workspaces {
   /** The workspace id for a Firebase user: stable, signed, reveals nothing. */
   idFor(uid: string): string {
     const part = createHash('sha256').update(`uid:${uid}`).digest('hex').slice(0, 20);
+    return `w${part}${this.mac(part)}`;
+  }
+
+  /** A new, signed project id that belongs to nobody yet. */
+  mint(): string {
+    const part = randomBytes(10).toString('hex');
     return `w${part}${this.mac(part)}`;
   }
 

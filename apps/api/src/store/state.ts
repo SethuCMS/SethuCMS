@@ -147,6 +147,20 @@ export interface StoredFileUsage {
   day?: string;
 }
 
+/**
+ * A project in a person's list (kept in the state of their first project).
+ * Membership itself is decided by the project, not by this list.
+ */
+export interface StoredProject {
+  id: string;
+  name: string;
+  /** True for projects this person created. */
+  owner: boolean;
+  /** Last role seen in that project, for the list. */
+  role?: Role;
+  createdAt: string;
+}
+
 /** A subscriber that receives change events over HTTP. */
 export interface StoredWebhook {
   id: string;
@@ -184,6 +198,8 @@ export interface State {
   invites: Record<string, StoredInvite>;
   /** Stored-file totals used for upload limits. */
   fileUsage: Record<string, StoredFileUsage>;
+  /** Projects this person owns or joined (first project's state only). */
+  projects: Record<string, StoredProject>;
 }
 
 /** A fresh state with no records. */
@@ -197,6 +213,7 @@ export const emptyState = (): State => ({
   people: {},
   invites: {},
   fileUsage: {},
+  projects: {},
 });
 
 /**

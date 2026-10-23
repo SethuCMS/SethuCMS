@@ -24,8 +24,15 @@ export function openWorkspaces(input: {
   logger: Logger;
 }): { hub: Workspaces } | undefined {
   const { options, env, config, firebase, fs, db, logger } = input;
-  if (env['SETHUCMS_WORKSPACES'] !== 'open') {
+  const mode = (env['SETHUCMS_WORKSPACES'] ?? '').trim().toLowerCase();
+  if (mode === '') {
     return undefined;
+  }
+  if (mode !== 'open') {
+    // A typo must not quietly leave sign-in closed to everyone else.
+    throw new Error(
+      `SETHUCMS_WORKSPACES must be "open" (got a different value of ${mode.length} characters)`,
+    );
   }
   if (!firebase || !config.firebaseAuth) {
     throw new Error(
@@ -38,12 +45,22 @@ export function openWorkspaces(input: {
     );
   }
   const firebaseConfig = config.firebaseAuth;
-  const secret = env['SETHUCMS_WORKSPACE_SECRET'] || env['SETHUCMS_VAULT_KEY'] || '';
+  const secret = (
+    env['SETHUCMS_WORKSPACE_SECRET'] ||
+    env['SETHUCMS_VAULT_KEY'] ||
+    ''
+  ).trim();
   if (secret.length < 24) {
     throw new Error(
       'SETHUCMS_WORKSPACES=open needs SETHUCMS_WORKSPACE_SECRET (24 or more random characters; create one with: openssl rand -hex 32)',
     );
   }
+  // How many workspaces one instance keeps open (the idle ones beyond it are
+  // closed and reopened on their next request).
+  const openLimit = Math.min(
+    64,
+    Math.max(2, Number.parseInt(env['SETHUCMS_WORKSPACES_OPEN'] ?? '', 10) || 8),
+  );
   // Workspaces share one Firestore connection; closing a workspace must not
   // close it for everyone.
   const shared = fs
@@ -87,6 +104,7 @@ export function openWorkspaces(input: {
       return createGateway({
         ...options,
         schema: undefined,
+        project: { id, hub },
         config: own,
         env: {
           ...env,
@@ -103,6 +121,7 @@ export function openWorkspaces(input: {
         logger,
       });
     },
+    openLimit,
   );
   return { hub };
 }

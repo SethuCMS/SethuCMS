@@ -130,8 +130,10 @@ writeFileSync(
         'api/index.mjs': { maxDuration: 30, includeFiles: 'api/adapter.proto' },
       },
       rewrites: [
+        { source: '/v1', destination: '/api/index' },
         { source: '/v1/(.*)', destination: '/api/index' },
-        { source: '/((?!v1/|api/).*)', destination: '/index.html' },
+        { source: '/w/(.*)', destination: '/api/index' },
+        { source: '/((?!v1/|w/|api/).*)', destination: '/index.html' },
       ],
       headers: [
         {

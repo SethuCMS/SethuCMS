@@ -41,6 +41,7 @@ import { RecordsService } from './content/records.js';
 import { EventBus } from './events.js';
 import { Router, type RequestContext, type Route } from './http/router.js';
 import { errorResponse, readJson, sendJson } from './http/respond.js';
+import { showLanding } from './http/landing.js';
 import { serveAdmin } from './http/static.js';
 import { createLogger } from './logger.js';
 import { Metrics } from './metrics.js';
@@ -51,6 +52,7 @@ import { GithubClient } from './security/github.js';
 import { registerFirebaseRoutes } from './routes/firebase.js';
 import { loadSchema } from './schema/code.js';
 import { registerSchemaRoutes } from './routes/schema.js';
+import { registerProjectRoutes } from './routes/projects.js';
 import { registerWorkspaceRoutes } from './routes/workspaces.js';
 import { Workspaces } from './tenancy.js';
 import { FirebaseVerifier } from './security/firebase.js';
@@ -353,6 +355,12 @@ async function assemble(
   registerPeopleRoutes(services, { vault, logger });
   registerInviteRoutes(services);
   registerContentRoutes(services);
+  if (options.project) {
+    registerProjectRoutes(services, {
+      hub: options.project.hub,
+      current: options.project.id,
+    });
+  }
   registerSchemaRoutes(services);
   registerFileRoutes(services);
   registerOpsRoutes(services);
@@ -462,9 +470,16 @@ async function assemble(
           routeLabel = 'static';
           return;
         }
+        if (showLanding(req, res, url.pathname === '/' ? 200 : 404)) {
+          return;
+        }
         sendJson(res, 404, {
           error: { code: 'NOT_FOUND', message: 'Not found', requestId },
         });
+        return;
+      }
+
+      if (url.pathname === '/v1/' && showLanding(req, res, 200)) {
         return;
       }
 
@@ -492,6 +507,9 @@ async function assemble(
         throw errors.notFound('Not found');
       }
       if ('allowed' in found) {
+        if (showLanding(req, res, 405, { Allow: found.allowed.join(', ') })) {
+          return;
+        }
         sendJson(
           res,
           405,

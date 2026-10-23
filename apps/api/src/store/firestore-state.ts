@@ -22,6 +22,7 @@ export const KINDS = [
   'people',
   'invites',
   'fileUsage',
+  'projects',
 ] as const;
 export type Kind = (typeof KINDS)[number];
 

@@ -95,6 +95,8 @@ describe('workspaces', () => {
           SETHUCMS_ADMIN_TOKEN: ADMIN_TOKEN,
           SETHUCMS_WORKSPACES: 'open',
           SETHUCMS_WORKSPACE_SECRET: 'w'.repeat(40),
+          // Test state lives in memory, so a closed workspace would lose it.
+          SETHUCMS_WORKSPACES_OPEN: '64',
         },
         rateLimit: { capacity: 10_000, refillPerSecond: 10_000 },
       },
@@ -244,6 +246,145 @@ describe('workspaces', () => {
       config: { host: '127.0.0.1', port: 5432, database: 'x', user: 'x', password: 'x', ssl: false },
     });
     assert.notEqual(made.status, 201, 'private addresses must be refused');
+  });
+
+  describe('projects', () => {
+    const projects = (id: string, method: string, path: string, token: string, body?: unknown) =>
+      inWorkspace(id, method, `/v1/projects${path}`, token, body);
+
+    it('lists a first project, then creates and switches between projects', async () => {
+      const pia = (await session('uid-pia', 'pia@example.com')).body.data;
+      const first = await projects(pia.workspace, 'GET', '', pia.token);
+      assert.equal(first.status, 200, JSON.stringify(first.body));
+      assert.equal(first.body.data.projects.length, 1);
+      assert.equal(first.body.data.projects[0].owner, true);
+      assert.equal(first.body.data.current, pia.workspace);
+
+      const made = await projects(pia.workspace, 'POST', '', pia.token, { name: '  Blog  ' });
+      assert.equal(made.status, 201, JSON.stringify(made.body));
+      assert.equal(made.body.data.name, 'Blog');
+      assert.equal(made.body.data.role, 'admin');
+      const blog = made.body.data;
+      assert.notEqual(blog.workspace, pia.workspace);
+      // The new session works in the new project, which starts empty.
+      const empty = await inWorkspace(blog.workspace, 'GET', '/v1/connections', blog.token);
+      assert.equal(empty.status, 200);
+      assert.equal(empty.body.data.length, 0);
+      // Seen from the new project, the list is the same and says where we are.
+      const fromBlog = await projects(blog.workspace, 'GET', '', blog.token);
+      assert.equal(fromBlog.body.data.projects.length, 2);
+      assert.equal(fromBlog.body.data.current, blog.workspace);
+
+      const back = await projects(blog.workspace, 'POST', `/${pia.workspace}/switch`, blog.token);
+      assert.equal(back.status, 200, JSON.stringify(back.body));
+      assert.equal(back.body.data.role, 'admin');
+      const ok = await inWorkspace(pia.workspace, 'GET', '/v1/connections', back.body.data.token);
+      assert.equal(ok.status, 200);
+    });
+
+    it('keeps projects of different people apart', async () => {
+      const quinn = (await session('uid-quinn', 'quinn@example.com')).body.data;
+      const rex = (await session('uid-rex', 'rex@example.com')).body.data;
+      const mine = (
+        await projects(quinn.workspace, 'POST', '', quinn.token, { name: 'Quinn only' })
+      ).body.data;
+      const listed = await projects(rex.workspace, 'GET', '', rex.token);
+      assert.equal(JSON.stringify(listed.body).includes(mine.id), false);
+      assert.equal(
+        (await projects(rex.workspace, 'POST', `/${mine.id}/switch`, rex.token)).status,
+        404,
+      );
+      assert.equal(
+        (await projects(rex.workspace, 'PATCH', `/${mine.id}`, rex.token, { name: 'Mine now' })).status,
+        404,
+      );
+      assert.equal(
+        (await projects(rex.workspace, 'DELETE', `/${mine.id}`, rex.token, { confirm: 'Quinn only' }))
+          .status,
+        404,
+      );
+    });
+
+    it('checks names, renames, and locks a deleted project', async () => {
+      const sam = (await session('uid-sam', 'sam@example.com')).body.data;
+      for (const name of ['', '   ', 'x'.repeat(61), 'bad\u0007name', 7]) {
+        const refused = await projects(sam.workspace, 'POST', '', sam.token, { name });
+        assert.equal(refused.status, 400, `name ${String(name)}`);
+      }
+      const made = (await projects(sam.workspace, 'POST', '', sam.token, { name: 'Shop' })).body.data;
+      const renamed = await projects(sam.workspace, 'PATCH', `/${made.id}`, sam.token, {
+        name: 'Shop two',
+      });
+      assert.equal(renamed.status, 200);
+      const wrong = await projects(sam.workspace, 'DELETE', `/${made.id}`, sam.token, {
+        confirm: 'Shop',
+      });
+      assert.equal(wrong.status, 400);
+      const deleted = await projects(sam.workspace, 'DELETE', `/${made.id}`, sam.token, {
+        confirm: 'Shop two',
+      });
+      assert.equal(deleted.status, 200, JSON.stringify(deleted.body));
+      // Nobody gets in any more, including the owner's old session.
+      assert.equal((await inWorkspace(made.id, 'GET', '/v1/connections', made.token)).status, 401);
+      assert.equal(
+        (await projects(sam.workspace, 'POST', `/${made.id}/switch`, sam.token)).status,
+        404,
+      );
+      // The first project cannot be deleted.
+      const home = await projects(sam.workspace, 'DELETE', `/${sam.workspace}`, sam.token, {
+        confirm: 'My project',
+      });
+      assert.equal(home.status, 409);
+    });
+
+    it('limits how many projects one person owns', async () => {
+      // Sign-ins are rate limited, so this reuses a person from earlier tests.
+      const tia = (await session('uid-bob', 'bob@example.com')).body.data;
+      for (let n = 1; n < 5; n += 1) {
+        const made = await projects(tia.workspace, 'POST', '', tia.token, { name: `P${n}` });
+        assert.equal(made.status, 201, JSON.stringify(made.body));
+      }
+      const extra = await projects(tia.workspace, 'POST', '', tia.token, { name: 'One too many' });
+      assert.equal(extra.status, 409);
+    });
+
+    it('lets an invited person add a shared project to their list', async () => {
+      const uma = (await session('uid-alice', 'alice@example.com')).body.data;
+      const vic = (await session('uid-bob', 'bob@example.com')).body.data;
+      const shared = (
+        await projects(uma.workspace, 'POST', '', uma.token, { name: 'Team site' })
+      ).body.data;
+      const invited = await inWorkspace(shared.id, 'POST', '/v1/admin/invites', shared.token, {
+        email: 'bob@example.com',
+        role: 'editor',
+      });
+      assert.equal(invited.status, 201, JSON.stringify(invited.body));
+      // Vic is not a member until the project says so: nothing to switch to.
+      assert.equal(
+        (await projects(vic.workspace, 'POST', `/${shared.id}/switch`, vic.token)).status,
+        404,
+      );
+      const joined = await gateway.call('POST', `/w/${shared.id}/v1/auth/firebase`, {
+        token: null,
+        body: { idToken: person('uid-bob', 'bob@example.com') },
+      });
+      assert.equal(joined.status, 200, JSON.stringify(joined.body));
+      assert.equal(joined.body.data.role, 'editor');
+      const remembered = await projects(shared.id, 'POST', '/remember', joined.body.data.token);
+      assert.equal(remembered.status, 200, JSON.stringify(remembered.body));
+      const list = await projects(vic.workspace, 'GET', '', vic.token);
+      const entry = list.body.data.projects.find((item: { id: string }) => item.id === shared.id);
+      assert.equal(entry.owner, false);
+      assert.equal(entry.role, 'editor');
+      const again = await projects(vic.workspace, 'POST', `/${shared.id}/switch`, vic.token);
+      assert.equal(again.status, 200);
+      assert.equal(again.body.data.role, 'editor');
+      // A member cannot rename or delete what they do not own.
+      assert.equal(
+        (await projects(vic.workspace, 'PATCH', `/${shared.id}`, vic.token, { name: 'Mine' })).status,
+        404,
+      );
+    });
   });
 });
 
