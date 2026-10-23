@@ -1,7 +1,7 @@
 # Deploy files
 
-- `github-workflows/` : CI, image release, Cloud Run, VPS. **GitHub only reads `.github/workflows/`, so copy them there:**
-  `mkdir -p .github/workflows && cp deploy/github-workflows/*.yml .github/workflows/`
+- `github-workflows/` : optional deploy workflows (Cloud Run, VPS). CI and releases are already in `.github/workflows/`. **GitHub only reads `.github/workflows/`, so copy one there to use it:**
+  `cp deploy/github-workflows/deploy-cloud-run.yml .github/workflows/`
   They use version tags for actions (`actions/checkout@v4` …). Replace each with a commit SHA before relying on them.
 - `compose.production.yml`, `Caddyfile`, `compose.env.example` : Postgres + gateway + optional worker + HTTPS on one server.
 

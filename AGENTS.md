@@ -99,5 +99,5 @@ Custom roles in the gateway (three fixed roles), native database change capture 
 ## Working agreements with the owner
 
 - **Do not `git commit` or `git push`** unless the owner asks. The owner reviews and commits.
-- Files under `.github/` cannot be written by some tools; workflows are kept in `sethucms/ci-workflows/` and copied in with `sh scripts/install-ci.sh`.
+- Workflows live in `.github/workflows/`. Some tools cannot write there, so ask the owner to copy a changed workflow in.
 - Say plainly what was verified and what was not. Local tests passing is not the same as working in production.

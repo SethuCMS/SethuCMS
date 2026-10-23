@@ -13,10 +13,8 @@ installed copies.
    (or install gitleaks). Anything it finds must be rotated, not just deleted.
 2. **Check what git will add:** `git status` in all repos. No `.env`,
    `.sethucms-data/`, `node_modules/` or `dist/`.
-3. **Delete `scripts/rename-to-sethucms.sh`** (`git rm`). It is a one-time
-   migration script that mentions the old name.
-4. **Remotes:** `git remote -v` in each repo. Fix any that still say `anydbcms-*`.
-5. **GitHub:** turn on private vulnerability reporting (Settings, Security) in
+3. **Remotes:** `git remote -v` in each repo. Fix any that still say `anydbcms-*`.
+4. **GitHub:** turn on private vulnerability reporting (Settings, Security) in
    each repo. `SECURITY.md` points people there.
 
 ## npm setup (once)

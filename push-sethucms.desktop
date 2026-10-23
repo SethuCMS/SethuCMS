@@ -1,8 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=Push SethuCMS to GitHub
-Comment=Checks login, waits until 9:00 pm on 10 Oct, then pushes all SethuCMS repos
-Exec=bash "/home/kasinadhsarma/sethucms/push-sethucms.sh"
-Terminal=true
-Icon=utilities-terminal
-Categories=Development;
