@@ -57,6 +57,7 @@ import { registerWorkspaceRoutes } from './routes/workspaces.js';
 import { Workspaces } from './tenancy.js';
 import { FirebaseVerifier } from './security/firebase.js';
 import { registerInviteRoutes } from './routes/invites.js';
+import { registerOriginRoutes } from './routes/origins.js';
 import { registerPeopleRoutes } from './routes/people.js';
 import { OidcClient } from './security/oidc.js';
 import { registerContentRoutes } from './routes/content.js';
@@ -354,6 +355,7 @@ async function assemble(
   });
   registerPeopleRoutes(services, { vault, logger });
   registerInviteRoutes(services);
+  registerOriginRoutes(services, config.allowedOrigins);
   registerContentRoutes(services);
   if (options.project) {
     registerProjectRoutes(services, {
@@ -410,7 +412,13 @@ async function assemble(
   const idempotency: Pick<IdempotencyStore, 'run'> = db
     ? new PostgresIdempotencyStore(db)
     : new IdempotencyStore();
-  const origins = new Set(config.allowedOrigins);
+  // The environment list plus the ones added in the admin panel.
+  const fixedOrigins = new Set(config.allowedOrigins);
+  const origins = {
+    has: (origin: string): boolean =>
+      fixedOrigins.has(origin) ||
+      Object.values(store.read().origins ?? {}).some((item) => item.origin === origin),
+  };
 
   // Per-request pipeline. Every path ends in the `finally` block that
   // records metrics and one structured log line.

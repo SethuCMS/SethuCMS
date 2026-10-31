@@ -196,10 +196,20 @@ export interface State {
   people: Record<string, StoredPerson>;
   /** E-mail invitations added from the admin panel. */
   invites: Record<string, StoredInvite>;
+  /** Browser origins added from the admin panel (CORS). Optional in older state files. */
+  origins?: Record<string, StoredOrigin>;
   /** Stored-file totals used for upload limits. */
   fileUsage: Record<string, StoredFileUsage>;
   /** Projects this person owns or joined (first project's state only). */
   projects: Record<string, StoredProject>;
+}
+
+/** A browser origin allowed to call the gateway. */
+export interface StoredOrigin {
+  id: string;
+  origin: string;
+  createdAt: string;
+  createdBy: string;
 }
 
 /** A fresh state with no records. */
@@ -212,6 +222,7 @@ export const emptyState = (): State => ({
   webhooks: {},
   people: {},
   invites: {},
+  origins: {},
   fileUsage: {},
   projects: {},
 });

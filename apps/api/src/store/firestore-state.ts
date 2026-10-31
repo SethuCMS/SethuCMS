@@ -21,6 +21,7 @@ export const KINDS = [
   'webhooks',
   'people',
   'invites',
+  'origins',
   'fileUsage',
   'projects',
 ] as const;

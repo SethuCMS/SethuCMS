@@ -36,7 +36,7 @@ export function clientIp(req: IncomingMessage, trustProxy: boolean): string {
 export function applyCors(
   req: IncomingMessage,
   res: ServerResponse,
-  allowed: Set<string>,
+  allowed: { has(origin: string): boolean },
 ): void {
   // Tell caches the response depends on Origin.
   res.setHeader('Vary', 'Origin');
