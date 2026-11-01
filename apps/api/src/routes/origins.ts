@@ -48,7 +48,12 @@ const view = (item: StoredOrigin) => ({
   createdAt: item.createdAt,
 });
 
-export function registerOriginRoutes(s: Services, fixed: string[]): void {
+export function registerOriginRoutes(
+  s: Services,
+  fixed: string[],
+  /** A workspace owner sees only the origins they added, not the server's own. */
+  ownOnly = false,
+): void {
   s.router.add({
     method: 'GET',
     pattern: '/v1/admin/origins',
@@ -60,7 +65,7 @@ export function registerOriginRoutes(s: Services, fixed: string[]): void {
         status: 200,
         body: {
           data: [
-            ...fixed.map((origin) => ({ id: null, origin, source: 'environment' as const, createdAt: null })),
+            ...(ownOnly ? [] : fixed).map((origin) => ({ id: null, origin, source: 'environment' as const, createdAt: null })),
             ...added.map(view),
           ],
         },

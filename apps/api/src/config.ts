@@ -12,6 +12,8 @@ import { parseLogLevel, type LogFormat, type LogLevel } from './logger.js';
 
 /** Resolved gateway settings. Build with {@link configFromEnv}. */
 export interface GatewayConfig {
+  /** True for a person's own workspace: the server's fixed origins are not listed to them. */
+  workspace?: boolean;
   /**
    * Where state, audit log and development secrets are kept. Undefined keeps
    * everything in memory.

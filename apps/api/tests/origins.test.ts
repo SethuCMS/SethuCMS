@@ -44,4 +44,21 @@ describe('CORS origins from the admin panel', () => {
     assert.equal((await gateway.call('POST', '/v1/admin/origins', { body: { origin: 'http://admin.test' } })).status, 409);
     assert.equal((await gateway.call('GET', '/v1/admin/origins', { token: null })).status, 401);
   });
+
+  it('lists only their own origins to a workspace owner, but keeps the fixed ones allowed', async () => {
+    const own = await startGateway({ workspace: true });
+    try {
+      const list = await own.call('GET', '/v1/admin/origins');
+      assert.deepEqual(list.body.data, []);
+      const made = await own.call('POST', '/v1/admin/origins', { body: { origin: 'https://shop.test' } });
+      assert.equal(made.status, 201);
+      const after = await own.call('GET', '/v1/admin/origins');
+      assert.deepEqual(after.body.data.map((o: { origin: string }) => o.origin), ['https://shop.test']);
+      const fixed = (await own.call('GET', '/v1/health/live', { token: null, headers: { Origin: 'http://admin.test' } }))
+        .headers.get('access-control-allow-origin');
+      assert.equal(fixed, 'http://admin.test');
+    } finally {
+      await own.close();
+    }
+  });
 });

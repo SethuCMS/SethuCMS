@@ -93,6 +93,7 @@ export function openWorkspaces(input: {
             ? undefined
             : join(config.dataDir, 'workspaces', id),
         sqliteDir: undefined,
+        workspace: true,
         // Strangers must not reach the server's own network.
         allowPrivateNetworks: false,
         seedDemo: false,

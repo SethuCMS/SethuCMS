@@ -355,7 +355,7 @@ async function assemble(
   });
   registerPeopleRoutes(services, { vault, logger });
   registerInviteRoutes(services);
-  registerOriginRoutes(services, config.allowedOrigins);
+  registerOriginRoutes(services, config.allowedOrigins, config.workspace === true);
   registerContentRoutes(services);
   if (options.project) {
     registerProjectRoutes(services, {
