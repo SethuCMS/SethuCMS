@@ -13,7 +13,7 @@
 #     -e SETHUCMS_VAULT_KEY=... -e SETHUCMS_CURSOR_SECRET=... -e SETHUCMS_PREVIEW_SECRET=... \
 #     -e SETHUCMS_ADMIN_TOKEN=... sethucms
 
-FROM node:25-bookworm-slim AS build
+FROM node:26-bookworm-slim AS build
 ENV PNPM_HOME=/pnpm PATH=/pnpm:$PATH
 # Node 25 images no longer ship corepack, so install pnpm directly.
 RUN npm install -g pnpm@9.15.0
@@ -29,7 +29,7 @@ RUN cd sethucms && pnpm install --no-frozen-lockfile && pnpm --filter @sethucms/
  && cd ../sethucms && pnpm install --no-frozen-lockfile && pnpm --filter @sethucms/api build \
  && cd ../sethucms-admin && pnpm install --no-frozen-lockfile && pnpm build:embedded
 
-FROM node:25-bookworm-slim AS runtime
+FROM node:26-bookworm-slim AS runtime
 # The folders keep the same paths as in the build stage so the folder links still resolve.
 COPY --from=build --chown=node:node /w /w
 RUN mkdir /data && chown node:node /data
