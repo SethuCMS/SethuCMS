@@ -67,6 +67,29 @@ describe('CORS origins from the admin panel', () => {
   });
 });
 
+describe('sign-in bridge origin check', () => {
+  let gateway: TestGateway;
+  before(async () => {
+    gateway = await startGateway();
+  });
+  after(async () => {
+    await gateway?.close();
+  });
+  const check = async (origin: string) =>
+    (await gateway.call('GET', `/v1/auth/bridge-origin?origin=${encodeURIComponent(origin)}`, { token: null })).body
+      .data.allowed;
+
+  it('says yes only for sites this gateway allows, without a sign-in', async () => {
+    assert.equal(await check('https://site.test'), false);
+    assert.equal(await check('nonsense'), false);
+    assert.equal(await check(''), false);
+    await gateway.call('POST', '/v1/admin/origins', { body: { origin: 'https://site.test' } });
+    assert.equal(await check('https://site.test'), true);
+    assert.equal(await check('https://site.test/'), true);
+    assert.equal(await check('https://other.test'), false);
+  });
+});
+
 describe('refused sites and last use', () => {
   let gateway: TestGateway;
   before(async () => {

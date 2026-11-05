@@ -5,6 +5,10 @@
  *                                  the sites that were recently refused, and when each was last used
  *   POST   /v1/admin/origins       (admin) { origin } allow a site
  *   DELETE /v1/admin/origins/:id   (admin) stop allowing it
+ *   GET    /v1/auth/bridge-origin?origin=  (no sign-in) is that site allowed here? Used by the
+ *                                  sign-in bridge, which hands a Firebase ID token only to a
+ *                                  site this workspace allows, so people need no Firebase
+ *                                  "authorized domain" for every site they add.
  *
  * The SETHUCMS_ALLOWED_ORIGINS list still works and cannot be removed here.
  * Requests carry bearer tokens in a header, never cookies, so CORS never needs
@@ -15,7 +19,7 @@
 import { randomUUID } from 'node:crypto';
 import { errors, isPlainObject } from '@sethucms/core';
 import { requireRole } from '../auth.js';
-import { OriginWatch, parseOriginPattern } from '../security/origins.js';
+import { matchesOrigin, OriginWatch, parseOriginPattern } from '../security/origins.js';
 import type { StoredOrigin } from '../store/state.js';
 import type { Services } from './services.js';
 
@@ -76,6 +80,34 @@ export function registerOriginRoutes(
           wildcardsEnabled: allowWildcards,
         },
       };
+    },
+  });
+
+  s.router.add({
+    method: 'GET',
+    pattern: '/v1/auth/bridge-origin',
+    auth: 'none',
+    handler: (ctx) => {
+      const raw = ctx.url.searchParams.get('origin') ?? '';
+      let origin = '';
+      try {
+        const url = new URL(raw);
+        if (url.protocol === 'https:' || url.hostname === 'localhost') {
+          origin = url.origin;
+        }
+      } catch {
+        // Not an address: not allowed.
+      }
+      const stored = Object.values(s.store.read().origins ?? {});
+      const allowed =
+        origin !== '' &&
+        (fixed.includes(origin) ||
+          stored.some(
+            (item) =>
+              (allowWildcards || !item.origin.includes('*')) &&
+              matchesOrigin(item.origin, origin),
+          ));
+      return { status: 200, body: { data: { allowed } } };
     },
   });
 
