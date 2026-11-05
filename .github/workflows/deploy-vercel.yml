@@ -1,0 +1,113 @@
+name: Deploy gateway (Vercel)
+
+# On every push to main that touches the gateway, core or the Vercel files: build the gateway and
+# the admin app into deploy/vercel/out, deploy that folder to the "out" Vercel project, then check
+# the live address. The project is not connected to git, so this workflow is what deploys it.
+# Needs the repository secrets VERCEL_TOKEN, VERCEL_ORG_ID and VERCEL_PROJECT_ID.
+# The gateway's own settings (vault key, Firestore key, SETHUCMS_WORKSPACES and so on) live in the
+# Vercel project (see deploy/vercel/set-env.sh); this workflow does not touch them.
+# Related repositories are checked out next to this one, as in ci.yml. If any are private, add the
+# repository secret CROSS_REPO_TOKEN.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/api/**"
+      - "packages/core/**"
+      - "deploy/vercel/**"
+      - ".github/workflows/deploy-vercel.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-vercel
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Test, build, deploy and check
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      SITE_URL: ${{ vars.GATEWAY_URL || 'https://out-omega-navy.vercel.app' }}
+    steps:
+      - name: Check Vercel credentials
+        run: |
+          for name in VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Repository secret $name is not set."
+              exit 1
+            fi
+          done
+
+      - name: Check out this repository
+        uses: actions/checkout@v7
+        with:
+          path: sethucms
+      - name: Check out sethucms-adapter-sdk
+        uses: actions/checkout@v7
+        with:
+          repository: SethuCMS/adapter-sdk
+          path: sethucms-adapter-sdk
+          token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+      - name: Check out sethucms-adapters
+        uses: actions/checkout@v7
+        with:
+          repository: SethuCMS/adapters
+          path: sethucms-adapters
+          token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+      - name: Check out sethucms-admin
+        uses: actions/checkout@v7
+        with:
+          repository: SethuCMS/admin
+          path: sethucms-admin
+          token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9.15.0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Build core
+        run: pnpm install --no-frozen-lockfile && pnpm --filter @sethucms/core build
+        working-directory: sethucms
+      - name: Build adapter SDK
+        run: pnpm install --no-frozen-lockfile && pnpm build
+        working-directory: sethucms-adapter-sdk
+      - name: Build adapters
+        run: pnpm install --no-frozen-lockfile && pnpm -r build
+        working-directory: sethucms-adapters
+      - name: Install gateway dependencies
+        run: pnpm install --no-frozen-lockfile
+        working-directory: sethucms
+      - name: Install admin dependencies
+        run: pnpm install --no-frozen-lockfile
+        working-directory: sethucms-admin
+      - run: pnpm typecheck
+        working-directory: sethucms
+      - run: pnpm test
+        working-directory: sethucms
+
+      - name: Build the deployment folder
+        run: node deploy/vercel/build.mjs
+        working-directory: sethucms
+
+      - name: Deploy to Vercel (production)
+        run: npx --yes vercel@65.5.0 deploy --prod --yes
+        working-directory: sethucms/deploy/vercel/out
+
+      - name: Check the live gateway
+        run: |
+          for attempt in 1 2 3 4 5 6; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$SITE_URL/v1/health" || true)
+            [ "$code" = "200" ] && break
+            echo "Attempt $attempt: $SITE_URL/v1/health answered $code"; sleep 10
+          done
+          if [ "$code" != "200" ]; then echo "::error::The gateway is not answering at $SITE_URL"; exit 1; fi
