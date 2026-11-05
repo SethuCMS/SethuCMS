@@ -2,3 +2,5 @@ node_modules/
 dist/
 .sethucms-data/
 .env
+.vercel
+.env*
