@@ -94,6 +94,11 @@ export function openWorkspaces(input: {
             : join(config.dataDir, 'workspaces', id),
         sqliteDir: undefined,
         workspace: true,
+        // Only the admin app may call a workspace; the owner's other sites
+        // (and other people's) must not. Unset keeps the old behaviour.
+        ...(config.workspaceOrigins
+          ? { allowedOrigins: config.workspaceOrigins }
+          : {}),
         // Strangers must not reach the server's own network.
         allowPrivateNetworks: false,
         seedDemo: false,

@@ -25,6 +25,12 @@ export interface GatewayConfig {
   /** Browser origins allowed to call the API from another address. */
   allowedOrigins: string[];
   /**
+   * Sites allowed to call a person's own workspace (normally just the admin
+   * app). When set, workspaces do not inherit allowedOrigins, so one person's
+   * sites never get access to another person's workspace.
+   */
+  workspaceOrigins?: string[];
+  /**
    * Let admins add `https://*.example.com` (one label, https only) next to
    * exact origins, for preview deployments. Default off. Shared hosting
    * domains such as vercel.app are always refused.
@@ -178,6 +184,14 @@ export function configFromEnv(env: NodeJS.ProcessEnv): GatewayConfig {
       .split(',')
       .map((origin) => origin.trim())
       .filter(Boolean),
+    ...(env['SETHUCMS_ADMIN_ORIGINS']
+      ? {
+          workspaceOrigins: env['SETHUCMS_ADMIN_ORIGINS']
+            .split(',')
+            .map((origin) => origin.trim())
+            .filter(Boolean),
+        }
+      : {}),
     allowWildcardOrigins: flag(env['SETHUCMS_ALLOW_WILDCARD_ORIGINS'], false),
     // Private networks are open by default only outside production, so a
     // production gateway cannot be pointed at internal hosts by accident.
