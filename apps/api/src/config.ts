@@ -25,6 +25,12 @@ export interface GatewayConfig {
   /** Browser origins allowed to call the API from another address. */
   allowedOrigins: string[];
   /**
+   * Let admins add `https://*.example.com` (one label, https only) next to
+   * exact origins, for preview deployments. Default off. Shared hosting
+   * domains such as vercel.app are always refused.
+   */
+  allowWildcardOrigins?: boolean;
+  /**
    * Let connections reach private networks (needed for a database on your own
    * network or laptop).
    */
@@ -172,6 +178,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv): GatewayConfig {
       .split(',')
       .map((origin) => origin.trim())
       .filter(Boolean),
+    allowWildcardOrigins: flag(env['SETHUCMS_ALLOW_WILDCARD_ORIGINS'], false),
     // Private networks are open by default only outside production, so a
     // production gateway cannot be pointed at internal hosts by accident.
     allowPrivateNetworks: flag(

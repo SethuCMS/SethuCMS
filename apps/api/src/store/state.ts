@@ -65,6 +65,12 @@ export interface StoredDraft {
   updatedAt: string;
   publishedAt?: string;
   publishedRecordId?: string;
+  /** When to publish by itself (UTC, ISO text). Only while status is `draft`. */
+  publishAt?: string;
+  /** Who scheduled it: the publish runs with that person's permissions. */
+  scheduledBy?: string;
+  /** Why the last scheduled publish did not happen. Never holds field values. */
+  scheduleError?: string;
 }
 
 /**

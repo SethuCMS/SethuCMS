@@ -18,6 +18,7 @@ import {
   assertWritable,
   errors,
   isPlainObject,
+  isSethuError,
   maskRecord,
   primaryKeyOf,
   type CollectionDefinition,
@@ -39,7 +40,9 @@ import type { RecordsService } from './records.js';
 import { assertCanEdit, checkValues, pruneFinished } from './drafts-checks.js';
 import {
   MAX_ACTIVE_DRAFTS,
+  MAX_SCHEDULE_DAYS,
   PREVIEW_TTL_SECONDS,
+  SCHEDULE_CHECK_MS,
   fingerprint,
   type DraftView,
 } from './drafts-types.js';
@@ -64,7 +67,14 @@ export class DraftsService {
     private readonly events: EventBus,
     private readonly previews: PreviewTokens,
     private readonly auth: Authenticator,
+    /**
+     * False when the gateway cannot keep a timer (serverless): scheduling is
+     * then refused instead of promising a publish that would never happen.
+     */
+    private readonly canSchedule = true,
   ) {}
+
+  private running = false;
 
   // ---- Reading --------------------------------------------------------
 
@@ -168,6 +178,10 @@ export class DraftsService {
       access,
       recordId ? 'update' : 'create',
     );
+    if (!recordId) {
+      // Fail now, not at publish time, for a singleton that is already filled.
+      await this.records.assertRoomForNewRecord(connectionId, collectionName);
+    }
 
     let baseHash: string | null = null;
     if (recordId) {
@@ -451,6 +465,194 @@ export class DraftsService {
     }
   }
 
+  // ---- Scheduled publish ----------------------------------------------
+
+  /**
+   * Publish this draft by itself at a set time.
+   *
+   * The latest saved values are published when the time comes, with the
+   * permissions of the person who scheduled it. Editing the draft afterwards
+   * keeps the schedule.
+   *
+   * @param body `{ publishAt }`: ISO text that says its time zone (for example
+   *   `2026-12-01T09:00:00+05:30` or ending in `Z`).
+   * @throws Validation for a missing zone, a past time or one too far ahead;
+   *   unsupported when this gateway cannot keep a timer.
+   */
+  async schedule(
+    principal: Principal,
+    connectionId: string,
+    collectionName: string,
+    draftId: string,
+    body: unknown,
+    requestId: string,
+  ): Promise<DraftView> {
+    if (!this.canSchedule) {
+      throw errors.unsupported(
+        'Scheduled publishing needs a gateway that keeps running. This one runs serverless, so publish by hand.',
+      );
+    }
+    const collection = await this.collectionOf(connectionId, collectionName);
+    if (!isPlainObject(body)) {
+      throw errors.validation('Body must be an object');
+    }
+    const unknown = Object.keys(body).filter((key) => key !== 'publishAt');
+    if (unknown.length > 0) {
+      throw errors.validation(`Unknown field: ${unknown[0]?.slice(0, 40)}`);
+    }
+    const when = parseScheduleTime(body['publishAt']);
+
+    const current = this.find(connectionId, collectionName, draftId);
+    // Scheduling needs the same permission as publishing now would.
+    accessFor(principal, collection, current.recordId ? 'update' : 'create');
+
+    const saved = await this.store.update((state) => {
+      const draft = state.drafts[draftId];
+      if (!draft || draft.status !== 'draft') {
+        throw errors.conflict('This draft is no longer open');
+      }
+      draft.publishAt = when;
+      draft.scheduledBy = principal.id;
+      delete draft.scheduleError;
+      draft.updatedAt = new Date().toISOString();
+      return structuredClone(draft);
+    });
+    this.audit.record({
+      actor: principal.id,
+      operation: 'draft.schedule',
+      target: `${connectionId}/${collectionName}/${draftId}`,
+      requestId,
+      detail: { publishAt: when },
+    });
+    this.announce('draft.updated', saved);
+    return this.view(principal, collection, saved);
+  }
+
+  /** Cancel a scheduled publish (or clear the note about a failed one). */
+  async unschedule(
+    principal: Principal,
+    connectionId: string,
+    collectionName: string,
+    draftId: string,
+    requestId: string,
+  ): Promise<DraftView> {
+    const collection = await this.collectionOf(connectionId, collectionName);
+    const current = this.find(connectionId, collectionName, draftId);
+    accessFor(principal, collection, current.recordId ? 'update' : 'create');
+
+    const saved = await this.store.update((state) => {
+      const draft = state.drafts[draftId];
+      if (!draft || draft.status !== 'draft') {
+        throw errors.conflict('This draft is no longer open');
+      }
+      delete draft.publishAt;
+      delete draft.scheduledBy;
+      delete draft.scheduleError;
+      draft.updatedAt = new Date().toISOString();
+      return structuredClone(draft);
+    });
+    this.audit.record({
+      actor: principal.id,
+      operation: 'draft.unschedule',
+      target: `${connectionId}/${collectionName}/${draftId}`,
+      requestId,
+    });
+    this.announce('draft.updated', saved);
+    return this.view(principal, collection, saved);
+  }
+
+  /**
+   * Publish every draft whose time has come.
+   *
+   * A failure (the record changed, the values no longer validate, the person
+   * lost access) never retries on its own: the schedule is cleared and the
+   * reason is kept on the draft, so nothing half-published loops forever.
+   *
+   * @returns How many were published.
+   */
+  async runDue(now = Date.now()): Promise<number> {
+    if (this.running) {
+      return 0;
+    }
+    this.running = true;
+    let published = 0;
+    try {
+      const due = Object.values(this.store.read().drafts).filter(
+        (draft) =>
+          draft.status === 'draft' &&
+          draft.publishAt !== undefined &&
+          Date.parse(draft.publishAt) <= now,
+      );
+      for (const draft of due) {
+        if (await this.publishScheduled(draft)) {
+          published += 1;
+        }
+      }
+    } finally {
+      this.running = false;
+    }
+    return published;
+  }
+
+  /** Check for due drafts now and then. Returns a function that stops it. */
+  startScheduler(): () => void {
+    const tick = () => void this.runDue().catch(() => undefined);
+    tick(); // catch up on anything that came due while the gateway was off
+    const timer = setInterval(tick, SCHEDULE_CHECK_MS);
+    timer.unref();
+    return () => clearInterval(timer);
+  }
+
+  private async publishScheduled(draft: StoredDraft): Promise<boolean> {
+    const requestId = `scheduled-${draft.id}`;
+    try {
+      const person = draft.scheduledBy
+        ? this.auth.find(draft.scheduledBy)
+        : null;
+      if (!person) {
+        throw errors.forbidden(
+          'The person who scheduled this can no longer publish',
+        );
+      }
+      await this.publish(
+        person,
+        draft.connectionId,
+        draft.collection,
+        draft.id,
+        {},
+        requestId,
+      );
+      return true;
+    } catch (error) {
+      const reason = isSethuError(error)
+        ? error.message
+        : 'Publishing failed unexpectedly';
+      const code = isSethuError(error) ? error.code : 'INTERNAL';
+      let failed: StoredDraft | undefined;
+      await this.store.update((state) => {
+        const current = state.drafts[draft.id];
+        // Another gateway may have claimed or finished it; leave that alone.
+        if (current && current.status === 'draft') {
+          delete current.publishAt;
+          current.scheduleError = reason;
+          current.updatedAt = new Date().toISOString();
+          failed = structuredClone(current);
+        }
+      });
+      if (failed) {
+        this.audit.record({
+          actor: draft.scheduledBy ?? 'scheduler',
+          operation: 'draft.schedule.fail',
+          target: `${draft.connectionId}/${draft.collection}/${draft.id}`,
+          requestId,
+          detail: { code },
+        });
+        this.announce('draft.updated', failed);
+      }
+      return false;
+    }
+  }
+
   // ---- Preview --------------------------------------------------------
 
   /** Create a short-lived link that shows this draft without an API token. */
@@ -646,6 +848,9 @@ export class DraftsService {
       ...(draft.publishedRecordId
         ? { publishedRecordId: draft.publishedRecordId }
         : {}),
+      ...(draft.publishAt ? { publishAt: draft.publishAt } : {}),
+      ...(draft.scheduledBy ? { scheduledBy: draft.scheduledBy } : {}),
+      ...(draft.scheduleError ? { scheduleError: draft.scheduleError } : {}),
     };
   }
 
@@ -665,6 +870,39 @@ export class DraftsService {
     });
   }
 
+}
+
+/**
+ * Turn the requested time into UTC ISO text.
+ *
+ * A time with no zone is refused: "9:00" means different moments for the
+ * editor and for the server, and a wrong guess would publish at the wrong time.
+ */
+export function parseScheduleTime(value: unknown, now = Date.now()): string {
+  if (
+    typeof value !== 'string' ||
+    value.length > 40 ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})$/.test(
+      value,
+    )
+  ) {
+    throw errors.validation(
+      'publishAt must be a date and time with its time zone, like 2026-12-01T09:00:00+05:30 or ending in Z',
+    );
+  }
+  const at = Date.parse(value);
+  if (!Number.isFinite(at)) {
+    throw errors.validation('publishAt is not a real date and time');
+  }
+  if (at <= now) {
+    throw errors.validation('publishAt must be in the future');
+  }
+  if (at > now + MAX_SCHEDULE_DAYS * 86_400_000) {
+    throw errors.validation(
+      `publishAt can be at most ${MAX_SCHEDULE_DAYS} days ahead`,
+    );
+  }
+  return new Date(at).toISOString();
 }
 
 // Re-exported so callers can import both from the drafts module.

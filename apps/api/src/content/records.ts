@@ -35,6 +35,22 @@ const LIST_PARAMS = new Set(['filter', 'sort', 'fields', 'limit', 'cursor']);
 // Bound the JSON filter text before parsing it.
 const MAX_FILTER_TEXT = 8192;
 
+// Counting reads keys page by page, so it is capped. Past the cap we say
+// "at least N" instead of walking a huge table.
+export const COUNT_DEFAULT_CAP = 1000;
+export const COUNT_MAX_CAP = 10000;
+const COUNT_PAGE = 500;
+// Counts are remembered briefly so a sidebar that asks for every collection on
+// each page view does not hit the database every time.
+const COUNT_TTL_MS = 30_000;
+const COUNT_CACHE_SIZE = 300;
+
+/** How many records match: exact, or "at least" when the cap was reached. */
+export interface CountOutcome {
+  count: number;
+  exact: boolean;
+}
+
 /** A page of records plus paging info and notes about adapter limits. */
 export interface ListOutcome {
   data: Array<Record<string, unknown>>;
@@ -49,6 +65,13 @@ export interface ListOutcome {
  * what they may see. Writes are audited and announced on the event bus.
  */
 export class RecordsService {
+  // key -> remembered count. Map keeps insertion order, so the first key is the
+  // oldest and can be dropped when the cache is full.
+  private readonly counts = new Map<
+    string,
+    { at: number; value: CountOutcome }
+  >();
+
   /**
    * @param registry Looks up open connections.
    * @param audit Receives an entry for every write.
@@ -93,6 +116,101 @@ export class RecordsService {
       page: { nextCursor: page.nextCursor, limit: query.page.limit },
       meta: { capabilityNotes: page.notes },
     };
+  }
+
+  /**
+   * Count the records the caller can see, up to `cap`.
+   *
+   * Uses the same checks as a list (the caller's fields and row rules), so a
+   * count never reveals rows a list would hide. The database is asked for one
+   * key per row, page by page; no adapter needs a special count call.
+   *
+   * @param filter Optional JSON filter text, same as the list `filter`.
+   * @param cap Stop counting after this many (`exact` is then false).
+   */
+  async count(
+    principal: Principal,
+    connectionId: string,
+    collectionName: string,
+    filter: string | null,
+    cap = COUNT_DEFAULT_CAP,
+  ): Promise<CountOutcome> {
+    const bound = await this.registry.bind(connectionId);
+    const collection = bound.model.require(collectionName);
+    const access = accessFor(principal, collection, 'read');
+
+    const key = [
+      principal.id,
+      connectionId,
+      collectionName,
+      cap,
+      filter ?? '',
+    ].join('\u0000');
+    const remembered = this.counts.get(key);
+    if (remembered && Date.now() - remembered.at < COUNT_TTL_MS) {
+      return remembered.value;
+    }
+
+    // Ask for one visible field per row: the key if the caller may see it.
+    const keyField = primaryKeyOf(collection).name;
+    const field =
+      access.fieldRead.get(keyField) === 'hide'
+        ? [...access.fieldRead].find(([, read]) => read !== 'hide')?.[0]
+        : keyField;
+    const params = new URLSearchParams();
+    if (filter) {
+      params.set('filter', filter);
+    }
+    const base = rawQueryFrom(collection.name, params);
+    if (field) {
+      base['projection'] = [field];
+    }
+
+    let total = 0;
+    let cursor: string | undefined;
+    for (;;) {
+      const limit = Math.min(COUNT_PAGE, cap - total);
+      const query = restrictQuery(
+        parseQuery({
+          ...base,
+          page: { limit, ...(cursor ? { cursor } : {}) },
+        }),
+        access,
+      );
+      const page = await bound.guarded.find(query);
+      total += page.records.length;
+      if (!page.nextCursor || page.records.length === 0) {
+        return this.remember(key, { count: total, exact: true });
+      }
+      if (total >= cap) {
+        return this.remember(key, { count: total, exact: false });
+      }
+      cursor = page.nextCursor;
+    }
+  }
+
+  // Keep the newest answers; forget the oldest when full.
+  private remember(key: string, value: CountOutcome): CountOutcome {
+    this.counts.delete(key);
+    this.counts.set(key, { at: Date.now(), value });
+    if (this.counts.size > COUNT_CACHE_SIZE) {
+      const oldest = this.counts.keys().next().value;
+      if (oldest !== undefined) {
+        this.counts.delete(oldest);
+      }
+    }
+    return value;
+  }
+
+  // A write changes the numbers, so forget remembered counts for that
+  // collection (every caller's, since the key starts with the caller).
+  private forgetCounts(connectionId: string, collectionName: string): void {
+    const part = ['', connectionId, collectionName, ''].join('\u0000');
+    for (const key of [...this.counts.keys()]) {
+      if (key.includes(part)) {
+        this.counts.delete(key);
+      }
+    }
   }
 
   /**
@@ -150,6 +268,7 @@ export class RecordsService {
     }
     rejectUnknownFields(collection, values);
     assertWritable(values, access);
+    await this.assertRoomForNewRecord(connectionId, collectionName);
 
     const created = await bound.guarded.create(collection.name, values);
     const id = String(created[primaryKeyOf(collection).name]);
@@ -160,6 +279,7 @@ export class RecordsService {
       requestId,
       detail: diffRecords(null, created),
     });
+    this.forgetCounts(connectionId, collectionName);
     this.events.publish({
       type: 'record.created',
       connectionId,
@@ -234,6 +354,15 @@ export class RecordsService {
       throw errors.notFound('Record not found');
     }
 
+    // A singleton is the one record the collection exists for. To remove it,
+    // take `singleton` out of the schema file first.
+    if (bound.ui.get(collection.name)?.singleton) {
+      throw errors.conflict(
+        'This collection holds a single record, so it cannot be deleted',
+        { reason: 'singleton' },
+      );
+    }
+
     const before = await bound.guarded.get(collection.name, id);
     await bound.guarded.delete(collection.name, id);
     this.audit.record({
@@ -243,12 +372,45 @@ export class RecordsService {
       requestId,
       detail: diffRecords(before, null),
     });
+    this.forgetCounts(connectionId, collectionName);
     this.events.publish({
       type: 'record.deleted',
       connectionId,
       collection: collectionName,
       recordId: id,
     });
+  }
+
+  /**
+   * A singleton collection takes one record only.
+   *
+   * Looks at the stored data directly (not through the caller's row rules), so
+   * the answer is the same for everyone. Two creates at the same instant could
+   * both pass this check; the schema owner can add a unique rule in the
+   * database if that matters.
+   *
+   * @throws Conflict when the collection is a singleton that already has its record.
+   */
+  async assertRoomForNewRecord(
+    connectionId: string,
+    collectionName: string,
+  ): Promise<void> {
+    const bound = await this.registry.bind(connectionId);
+    const collection = bound.model.require(collectionName);
+    if (!bound.ui.get(collection.name)?.singleton) {
+      return;
+    }
+    const existing = await bound.guarded.find({
+      collection: collection.name,
+      projection: [primaryKeyOf(collection).name],
+      page: { limit: 1 },
+    });
+    if (existing.records.length > 0) {
+      throw errors.conflict(
+        'This collection holds a single record, and it already exists. Edit it instead.',
+        { reason: 'singleton' },
+      );
+    }
   }
 
   /**

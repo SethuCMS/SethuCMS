@@ -8,6 +8,7 @@ import {
   type CollectionDefinition,
 } from '@sethucms/core';
 import { accessFor, tryReadAccess } from '../content/access.js';
+import { COUNT_DEFAULT_CAP, COUNT_MAX_CAP } from '../content/records.js';
 import { openEventStream } from '../http/sse.js';
 import type { Bound } from '../connections/registry.js';
 import type { Services } from './services.js';
@@ -101,6 +102,68 @@ export function registerContentRoutes(s: Services): void {
             ...describeCollection(ctx.principal, bound, collection),
             canStoreFiles: s.registry.canStoreFiles(bound.connection),
           },
+        },
+      };
+    },
+  });
+
+  // ---- Counts ---------------------------------------------------------
+
+  // One call for the sidebar: how many records each readable collection has.
+  // Capped, so a huge table answers "1000+" quickly instead of being walked.
+  router.add({
+    method: 'GET',
+    pattern: '/v1/connections/:connectionId/counts',
+    auth: 'token',
+    handler: async (ctx) => {
+      const connectionId = ctx.params['connectionId'] as string;
+      const bound = await s.registry.bind(connectionId);
+      const counts: Record<
+        string,
+        { count: number; exact: boolean } | null
+      > = {};
+      for (const collection of bound.model.list()) {
+        if (!tryReadAccess(ctx.principal, collection)) {
+          continue;
+        }
+        // One slow or failing collection must not blank the whole sidebar.
+        counts[collection.name] = await s.records
+          .count(ctx.principal, connectionId, collection.name, null)
+          .catch(() => null);
+      }
+      return { status: 200, body: { data: counts } };
+    },
+  });
+
+  router.add({
+    method: 'GET',
+    pattern: '/v1/connections/:connectionId/collections/:collection/count',
+    auth: 'token',
+    handler: async (ctx) => {
+      const params = ctx.url.searchParams;
+      for (const key of params.keys()) {
+        if (key !== 'filter' && key !== 'max') {
+          throw errors.validation(`Unknown query parameter: ${key.slice(0, 40)}`);
+        }
+      }
+      const max = params.get('max');
+      if (max !== null && !/^\d{1,5}$/.test(max)) {
+        throw errors.validation('max must be a whole number');
+      }
+      const cap = max === null ? COUNT_DEFAULT_CAP : Number(max);
+      if (cap < 1 || cap > COUNT_MAX_CAP) {
+        throw errors.validation(`max must be between 1 and ${COUNT_MAX_CAP}`);
+      }
+      return {
+        status: 200,
+        body: {
+          data: await s.records.count(
+            ctx.principal,
+            ctx.params['connectionId'] as string,
+            ctx.params['collection'] as string,
+            params.get('filter'),
+            cap,
+          ),
         },
       };
     },
@@ -319,6 +382,45 @@ export function registerContentRoutes(s: Services): void {
         },
       };
     },
+  });
+
+  // Publish this draft by itself later. PUT sets or changes the time, DELETE
+  // cancels it. Refused on a serverless gateway (nothing could run it).
+  router.add({
+    method: 'PUT',
+    pattern: `${drafts}/:draftId/schedule`,
+    auth: 'token',
+    handler: async (ctx) => ({
+      status: 200,
+      body: {
+        data: await s.drafts.schedule(
+          ctx.principal,
+          ctx.params['connectionId'] as string,
+          ctx.params['collection'] as string,
+          ctx.params['draftId'] as string,
+          await ctx.json(),
+          ctx.requestId,
+        ),
+      },
+    }),
+  });
+
+  router.add({
+    method: 'DELETE',
+    pattern: `${drafts}/:draftId/schedule`,
+    auth: 'token',
+    handler: async (ctx) => ({
+      status: 200,
+      body: {
+        data: await s.drafts.unschedule(
+          ctx.principal,
+          ctx.params['connectionId'] as string,
+          ctx.params['collection'] as string,
+          ctx.params['draftId'] as string,
+          ctx.requestId,
+        ),
+      },
+    }),
   });
 
   router.add({
@@ -561,13 +663,14 @@ function uiFor(bound: Bound, collection: string, field: string) {
 /** The schema file's title and title field for a collection. */
 function collectionUi(bound: Bound, collection: string) {
   const entry = bound.ui.get(collection);
-  if (!entry || (!entry.title && !entry.titleField)) {
+  if (!entry || (!entry.title && !entry.titleField && !entry.singleton)) {
     return {};
   }
   return {
     ui: {
       ...(entry.title ? { title: entry.title } : {}),
       ...(entry.titleField ? { titleField: entry.titleField } : {}),
+      ...(entry.singleton ? { singleton: true } : {}),
     },
   };
 }

@@ -113,7 +113,7 @@ const FIELD_KEYS = [
   'name', 'type', 'label', 'description', 'widget', 'hidden', 'readOnly',
   'required', 'min', 'max', 'minLength', 'maxLength', 'options',
 ] as const;
-const COLLECTION_KEYS = ['name', 'title', 'titleField', 'strict', 'fields'] as const;
+const COLLECTION_KEYS = ['name', 'title', 'titleField', 'strict', 'singleton', 'fields'] as const;
 
 function parseField(input: unknown, where: string): FieldSchema {
   if (!isObj(input)) {
@@ -198,6 +198,10 @@ export function parseSchema(input: unknown): SchemaFile {
     const strict = flag(item['strict'], `${here} strict`);
     if (strict !== undefined) {
       out.strict = strict;
+    }
+    const singleton = flag(item['singleton'], `${here} singleton`);
+    if (singleton !== undefined) {
+      out.singleton = singleton;
     }
     const fields = item['fields'];
     if (fields !== undefined) {
@@ -301,6 +305,8 @@ export interface FieldUi {
 export interface CollectionUi {
   title?: string;
   titleField?: string;
+  /** Exactly one record: the editor opens it directly, no new ones, no delete. */
+  singleton?: boolean;
   fields: Map<string, FieldUi>;
 }
 
@@ -411,6 +417,7 @@ export function applySchema(
     });
     const entry: CollectionUi = { fields: fieldUi };
     if (coded.title) entry.title = coded.title;
+    if (coded.singleton === true) entry.singleton = true;
     if (coded.titleField && present.has(coded.titleField)) {
       entry.titleField = coded.titleField;
     }

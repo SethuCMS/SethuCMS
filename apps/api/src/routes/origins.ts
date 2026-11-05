@@ -1,59 +1,56 @@
 /**
  * Browser origins allowed to call the gateway (CORS), managed from the admin.
  *
- *   GET    /v1/admin/origins       (admin) list them, with the fixed ones from the environment
+ *   GET    /v1/admin/origins       (admin) list them, with the fixed ones from the environment,
+ *                                  the sites that were recently refused, and when each was last used
  *   POST   /v1/admin/origins       (admin) { origin } allow a site
  *   DELETE /v1/admin/origins/:id   (admin) stop allowing it
  *
  * The SETHUCMS_ALLOWED_ORIGINS list still works and cannot be removed here.
- * Credentials are always sent with bearer tokens, so only exact origins are
- * accepted: scheme, host and optional port, no path and no wildcard.
+ * Requests carry bearer tokens in a header, never cookies, so CORS never needs
+ * credentials. Only exact origins are accepted (scheme, host and optional
+ * port, no path), unless the gateway owner switches on one-label wildcards
+ * with SETHUCMS_ALLOW_WILDCARD_ORIGINS. The rules are in security/origins.ts.
  */
 import { randomUUID } from 'node:crypto';
 import { errors, isPlainObject } from '@sethucms/core';
 import { requireRole } from '../auth.js';
+import { OriginWatch, parseOriginPattern } from '../security/origins.js';
 import type { StoredOrigin } from '../store/state.js';
 import type { Services } from './services.js';
 
 const MAX_ORIGINS = 100;
 
-/** The normalised origin, or throws when the text is not a plain origin. */
+/** The normalised exact origin, or throws when the text is not a plain origin. */
 export function parseOrigin(text: string): string {
-  let url: URL;
-  try {
-    url = new URL(text.trim());
-  } catch {
-    throw errors.validation('Enter an origin such as https://example.com');
-  }
-  const plain =
-    (url.protocol === 'https:' || url.protocol === 'http:') &&
-    url.pathname === '/' &&
-    !url.search &&
-    !url.hash &&
-    !url.username &&
-    !url.password &&
-    !text.includes('*');
-  if (!plain) {
-    throw errors.validation(
-      'Use only the scheme, host and port, for example https://example.com',
-    );
-  }
-  return url.origin;
+  return parseOriginPattern(text, false).origin;
 }
 
-const view = (item: StoredOrigin) => ({
-  id: item.id,
-  origin: item.origin,
-  source: 'admin' as const,
-  createdAt: item.createdAt,
-});
+export interface OriginRouteOptions {
+  /** Remembers refused sites and last use. Without it those fields stay empty. */
+  watch?: OriginWatch;
+  /** True when the gateway owner allows `https://*.example.com` entries. */
+  allowWildcards?: boolean;
+}
 
 export function registerOriginRoutes(
   s: Services,
   fixed: string[],
   /** A workspace owner sees only the origins they added, not the server's own. */
   ownOnly = false,
+  options: OriginRouteOptions = {},
 ): void {
+  const watch = options.watch;
+  const allowWildcards = options.allowWildcards === true;
+
+  const view = (item: StoredOrigin) => ({
+    id: item.id,
+    origin: item.origin,
+    source: 'admin' as const,
+    createdAt: item.createdAt,
+    lastSeenAt: watch?.lastUsed(item.origin) ?? null,
+  });
+
   s.router.add({
     method: 'GET',
     pattern: '/v1/admin/origins',
@@ -65,9 +62,18 @@ export function registerOriginRoutes(
         status: 200,
         body: {
           data: [
-            ...(ownOnly ? [] : fixed).map((origin) => ({ id: null, origin, source: 'environment' as const, createdAt: null })),
+            ...(ownOnly ? [] : fixed).map((origin) => ({
+              id: null,
+              origin,
+              source: 'environment' as const,
+              createdAt: null,
+              lastSeenAt: watch?.lastUsed(origin) ?? null,
+            })),
             ...added.map(view),
           ],
+          // Sites that called this gateway from a browser and were refused.
+          blocked: watch?.blocked() ?? [],
+          wildcardsEnabled: allowWildcards,
         },
       };
     },
@@ -83,7 +89,8 @@ export function registerOriginRoutes(
       if (!isPlainObject(input) || typeof input['origin'] !== 'string') {
         throw errors.validation('Body must be { "origin": "https://example.com" }');
       }
-      const origin = parseOrigin(input['origin']);
+      const parsed = parseOriginPattern(input['origin'], allowWildcards);
+      const origin = parsed.origin;
       const item: StoredOrigin = {
         id: `org_${randomUUID().slice(0, 8)}`,
         origin,
@@ -100,12 +107,14 @@ export function registerOriginRoutes(
         }
         all[item.id] = item;
       });
+      // The site is allowed now, so stop listing it as refused.
+      watch?.clearAllowedBy(origin);
       s.audit.record({
         actor: ctx.principal.id,
         operation: 'origin.create',
         target: `origin:${item.id}`,
         requestId: ctx.requestId,
-        detail: { origin },
+        detail: { origin, wildcard: parsed.wildcard },
       });
       return { status: 201, body: { data: view(item) } };
     },

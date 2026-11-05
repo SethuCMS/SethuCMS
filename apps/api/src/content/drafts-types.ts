@@ -27,7 +27,17 @@ export interface DraftView {
   updatedAt: string;
   publishedAt?: string;
   publishedRecordId?: string;
+  /** Set while a scheduled publish is waiting. */
+  publishAt?: string;
+  scheduledBy?: string;
+  /** Set when a scheduled publish ran and failed (the schedule is then cleared). */
+  scheduleError?: string;
 }
+
+/** How often the gateway looks for drafts that are due. */
+export const SCHEDULE_CHECK_MS = 15_000;
+/** The furthest ahead a publish can be scheduled. */
+export const MAX_SCHEDULE_DAYS = 366;
 
 // Hash of a record's canonical JSON; used to detect changes made behind
 // a draft's back. Canonical form makes key order irrelevant.

@@ -51,7 +51,9 @@ export function applyCors(
   );
   res.setHeader(
     'Access-Control-Allow-Headers',
-    'Authorization, Content-Type, Idempotency-Key, X-File-Name, X-File-Access',
+    // X-Request-Id and Traceparent let a browser app pass its own trace along
+    // (the gateway reads both); without them the preflight would refuse it.
+    'Authorization, Content-Type, Idempotency-Key, X-File-Name, X-File-Access, X-Request-Id, Traceparent',
   );
   res.setHeader(
     'Access-Control-Expose-Headers',

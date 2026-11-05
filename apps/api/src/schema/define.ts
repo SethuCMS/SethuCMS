@@ -40,6 +40,11 @@ export interface CollectionSchema {
   titleField?: string;
   /** Show only the fields listed here (others are hidden by default). */
   strict?: boolean;
+  /**
+   * The collection holds exactly one record, like site settings. Editors open
+   * it directly; the gateway refuses a second record and refuses to delete it.
+   */
+  singleton?: boolean;
   fields?: FieldSchema[];
 }
 

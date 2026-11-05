@@ -58,6 +58,7 @@ import { Workspaces } from './tenancy.js';
 import { FirebaseVerifier } from './security/firebase.js';
 import { registerInviteRoutes } from './routes/invites.js';
 import { registerOriginRoutes } from './routes/origins.js';
+import { matchesOrigin, OriginWatch } from './security/origins.js';
 import { registerPeopleRoutes } from './routes/people.js';
 import { OidcClient } from './security/oidc.js';
 import { registerContentRoutes } from './routes/content.js';
@@ -267,7 +268,10 @@ async function assemble(
     events,
     previews,
     auth,
+    // A timer is needed to publish later; serverless has none that lasts.
+    !config.serverless,
   );
+  const stopScheduler = config.serverless ? undefined : drafts.startScheduler();
 
   const migrations = new MigrationManager({
     registry,
@@ -355,7 +359,12 @@ async function assemble(
   });
   registerPeopleRoutes(services, { vault, logger });
   registerInviteRoutes(services);
-  registerOriginRoutes(services, config.allowedOrigins, config.workspace === true);
+  // Remembers which browser sites were refused, so an admin can allow one.
+  const originWatch = new OriginWatch();
+  registerOriginRoutes(services, config.allowedOrigins, config.workspace === true, {
+    watch: originWatch,
+    allowWildcards: config.allowWildcardOrigins === true,
+  });
   registerContentRoutes(services);
   if (options.project) {
     registerProjectRoutes(services, {
@@ -412,12 +421,44 @@ async function assemble(
   const idempotency: Pick<IdempotencyStore, 'run'> = db
     ? new PostgresIdempotencyStore(db)
     : new IdempotencyStore();
-  // The environment list plus the ones added in the admin panel.
+  // The environment list (exact matches only) plus the ones added in the
+  // admin panel (which may include one-label wildcards when switched on).
   const fixedOrigins = new Set(config.allowedOrigins);
+  // Switching wildcards off must stop ones saved earlier from matching too.
+  const wildcardsOn = config.allowWildcardOrigins === true;
   const origins = {
     has: (origin: string): boolean =>
       fixedOrigins.has(origin) ||
-      Object.values(store.read().origins ?? {}).some((item) => item.origin === origin),
+      Object.values(store.read().origins ?? {}).some(
+        (item) =>
+          (wildcardsOn || !item.origin.includes('*')) &&
+          matchesOrigin(item.origin, origin),
+      ),
+  };
+  /**
+   * Note which browser site called, for the admin's "recently refused" list.
+   * A page served by the gateway itself also sends an Origin on its own POST
+   * requests; that is not a refused site, so it is skipped.
+   */
+  const watchOrigin = (req: IncomingMessage): void => {
+    const origin = req.headers['origin'];
+    if (typeof origin !== 'string') {
+      return;
+    }
+    let originHost: string;
+    try {
+      originHost = new URL(origin).host;
+    } catch {
+      return; // "null" and other values that are not an address
+    }
+    const ownHosts: Array<string | string[] | undefined> = [req.headers['host']];
+    if (config.trustProxy) {
+      ownHosts.push(req.headers['x-forwarded-host']);
+    }
+    if (ownHosts.includes(originHost)) {
+      return;
+    }
+    originWatch.seen(origin, origins.has(origin));
   };
 
   // Per-request pipeline. Every path ends in the `finally` block that
@@ -462,6 +503,7 @@ async function assemble(
 
       // CORS runs before routing so even errors carry the headers a browser
       // needs.
+      watchOrigin(req);
       applyCors(req, res, origins);
       if (req.method === 'OPTIONS') {
         sendJson(res, 204, undefined, { 'Access-Control-Max-Age': '600' });
@@ -686,6 +728,7 @@ async function assemble(
         // Long-lived event streams would keep the server open forever.
         setTimeout(() => server.closeAllConnections(), 2000).unref();
       });
+      stopScheduler?.();
       await workspaces?.hub.close();
       await migrations.stop();
       await changeFeed.drain();

@@ -44,6 +44,7 @@ All settings are environment variables. See [`.env.example`](.env.example) for t
 | `SETHUCMS_DATA_DIR` | `./.sethucms-data` | Saved state. `memory` keeps nothing on disk |
 | `SETHUCMS_ADMIN_DIR` | none | Built admin app to serve at `/` |
 | `SETHUCMS_ALLOWED_ORIGINS` | none | Browser origins allowed to call the API (CORS) |
+| `SETHUCMS_ALLOW_WILDCARD_ORIGINS` | off | Let admins add `https://*.example.com` (one subdomain level, https only) for preview deployments. Shared hosting such as `*.vercel.app` is always refused |
 | `SETHUCMS_ALLOW_PRIVATE_NETWORKS` | on locally, off in production | Let connections reach private addresses |
 | `SETHUCMS_TRUST_PROXY` | off | Believe `X-Forwarded-For` |
 
@@ -61,9 +62,11 @@ Send `Authorization: Bearer <token>`. This is the same contract the SDKs use.
 | `GET /v1/connections/:c/collections/:n` | any token | Full definition: which fields this token may edit, what actions it may take |
 | `GET  …/records` | any token | List. Query: `filter` (JSON), `sort` (`-created_at,name`), `fields`, `limit`, `cursor` |
 | `GET  …/records/:id` | any token | One record |
+| `GET /v1/connections/:c/counts`, `GET …/collections/:n/count` | any token | How many records the token can see: all collections at once, or one (with `filter`, `max`). Capped (default 1000, at most 10000); `exact: false` means "at least" |
 | `POST …/records`, `PATCH …/records/:id`, `DELETE …/records/:id` | editor | Write. Send `Idempotency-Key` to make retries safe |
 | `GET/POST …/drafts`, `GET/PATCH/DELETE …/drafts/:id` | editor | Drafts. `PATCH` needs the `version` you last saw |
 | `POST …/drafts/:id/publish` | editor | Write the draft to the database. Body `{ "version", "force"? }` |
+| `PUT …/drafts/:id/schedule`, `DELETE …/drafts/:id/schedule` | editor | Publish the draft by itself later (body `{ "publishAt" }`, ISO text with a time zone), or cancel that |
 | `POST …/drafts/:id/preview-link` | editor | A signed link that shows the draft, valid 15 minutes |
 | `GET /v1/preview/:token`, `GET /v1/preview/:token/events` | the link | The draft merged over the published record, and a live stream of changes |
 | `GET /v1/events` | any token | Live stream of changes made through the gateway (ids only) |
@@ -78,6 +81,27 @@ encrypted, so a half-finished article never appears in a production table.
 - Someone changing the live record while a draft is open: the draft remembers a fingerprint of the record it started from. Publishing refuses with `409` (`details.reason = "record_changed"`) unless you send `force: true`.
 - Publishing is claimed first, so a double click cannot publish twice.
 - Drafts may be incomplete. Required fields are checked when you publish.
+
+### Scheduled publishing
+
+`PUT …/drafts/:id/schedule` with `{ "publishAt": "2026-12-01T09:00:00+05:30" }` publishes that draft at that time.
+
+- The time must include its zone (`Z` or `+05:30`), be in the future and at most 366 days ahead. It is stored in UTC.
+- At the time, the **latest saved values** are published, with the permissions of the person who scheduled it. Editing the draft afterwards keeps the schedule.
+- The gateway looks for due drafts every 15 seconds, and once at start. A draft that came due while the gateway was off publishes when it starts again.
+- If publishing fails (the live record changed since the draft began, the values no longer validate, the person lost access), nothing is published, the schedule is cleared and the reason is kept on the draft as `scheduleError`. It never retries by itself. The audit log records `draft.schedule`, `draft.unschedule` and `draft.schedule.fail`; a success is the usual `draft.publish`.
+- It needs a gateway that keeps running. With `SETHUCMS_SERVERLESS=1` the call is refused (`422 CAPABILITY_UNSUPPORTED`) instead of promising a publish that could not happen.
+- With several gateways sharing PostgreSQL state, each looks for due drafts; the publish is claimed first, so only one publishes. This is by design but has not been run against several live gateways.
+
+### Singleton collections
+
+A collection that holds exactly one record (site settings, a home page) is marked in the schema file:
+
+```json
+{ "collections": [{ "name": "settings", "title": "Site settings", "singleton": true }] }
+```
+
+The admin then opens that record directly, with no list, no New and no Delete. The gateway enforces it, so it holds for every client: a second record is refused (`409`, `details.reason = "singleton"`), as is deleting the record. Editing it is normal. Remove `singleton` from the schema first if the record must ever be deleted. Two creates at the very same instant on an empty collection could both pass the check; add a unique rule in the database if that matters.
 
 ### Live preview
 
@@ -114,7 +138,7 @@ A new adapter is one entry there plus a package from `sethucms-adapters`.
 | Cursors | Signed, expire after 24 hours, and only work for the query that produced them |
 | Errors | One standard body. Database messages, hosts and SQL never reach clients (`INTERNAL` is a fixed message) |
 | Abuse | Rate limits per address and per token, 1 MB body limit, 30 s request timeout, caps on open streams |
-| Browsers | Strict CORS allow-list. The API sends `no-store`, `nosniff`, a locked-down CSP and no referrer. The admin is served with its own strict CSP |
+| Browsers | Strict CORS allow-list (exact origins; see [Browser access (CORS)](#browser-access-cors)). The API sends `no-store`, `nosniff`, a locked-down CSP and no referrer. The admin is served with its own strict CSP |
 | Secrets in settings | Connection settings containing keys such as `password` or `token` are refused with a pointer to `credentials` |
 | Audit | Every change is recorded with the actor and a redacted before/after of the changed fields |
 | Startup | Production refuses to start without its secrets and an admin token |
@@ -173,3 +197,23 @@ The PostgreSQL test creates and drops its own table `gw_posts`.
 | `src/store/state.ts` | Saved state (file or memory) |
 | `src/auth.ts`, `src/audit.ts`, `src/events.ts` | Tokens and roles, audit log, live-event bus |
 | `src/http/` | Router, JSON responses, server-sent events, static admin files |
+
+## Browser access (CORS)
+
+A website can call the gateway from a browser only if its address is allowed. Requests carry a bearer token in a header and never use cookies, so the gateway never sends `Access-Control-Allow-Credentials`, and allowing a site gives it no access by itself: every request still needs a token, and the token's role decides what it can do.
+
+- **Where to set it.** `SETHUCMS_ALLOWED_ORIGINS` (comma separated, exact addresses, cannot be changed from the admin) and the admin screen **CORS origins** (`/v1/admin/origins`, admin only, every change is audited).
+- **What an address looks like.** Scheme, host and optional port, no path: `https://portal.example.com`, `http://localhost:3000`.
+- **Preview deployments.** Set `SETHUCMS_ALLOW_WILDCARD_ORIGINS=1`, then an admin can add `https://*.preview.example.com`. The star stands for exactly one label (`pr-12.preview.example.com` matches; `a.b.preview.example.com` and `preview.example.com` do not), https only, no port. Shared hosting domains (`vercel.app`, `netlify.app`, `github.io` and similar) and country domains such as `co.uk` are refused. The list of shared hosts is short and is not a full public-suffix list, so use a domain you own. Entries in `SETHUCMS_ALLOWED_ORIGINS` are always exact, never wildcards. Switching the setting off again stops wildcard entries saved earlier from matching (they stay listed so you can remove them).
+- **Allow a refused site in one click.** The CORS origins screen lists sites that called the gateway and were refused, with a count, and an **Allow this site** button. The list is kept in memory (bounded to 20), records only well-formed origins, and starts empty after a restart. The gateway's own address is never listed. "Last used" per entry works the same way: it means since the gateway started.
+- **Preflight.** `OPTIONS` is answered before login and routing, with `Max-Age` 600. Allowed request headers: `Authorization`, `Content-Type`, `Idempotency-Key`, `X-File-Name`, `X-File-Access`, `X-Request-Id`, `Traceparent`. Every answer, errors included, carries `Vary: Origin`.
+
+### When a browser call fails
+
+| What you see | Cause | Fix |
+| --- | --- | --- |
+| Console: "blocked by CORS policy", or `Failed to fetch` with no status | The site's origin is not allowed (or the gateway is down, or an https page is calling an http gateway) | Add the exact origin in **CORS origins**, or use **Allow this site** if it is listed as refused. Check the gateway is running |
+| `401 Unauthorized` | Token missing, wrong or expired | Sign in again or create a new token. Not a CORS problem |
+| `403 Forbidden` | The token's role may not do this, or the collection is not exposed | Check the role and the exposed collections. Allowing the site changes nothing |
+| Works in `curl`, fails in the browser | `curl` does not enforce CORS | Add the origin the browser shows in the console |
+
