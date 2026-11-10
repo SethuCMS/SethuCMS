@@ -176,6 +176,7 @@ export class Authenticator {
     subject: string,
     hours: number,
     source: 'oidc' | 'totp' = 'oidc',
+    email?: string,
   ): Promise<{ id: string; token: string; expiresAt: string }> {
     const plain = newTokenValue();
     const id = `tok_${randomUUID().slice(0, 8)}`;
@@ -211,9 +212,31 @@ export class Authenticator {
         expiresAt,
         source,
         subject,
+        ...(email ? { email } : {}),
       };
     });
     return { id, token: plain, expiresAt };
+  }
+
+  /** Who a token belongs to: its name, role and (for sign-in sessions) verified e-mail. */
+  describe(id: string): {
+    name: string;
+    role: Role;
+    session: boolean;
+    subject?: string;
+    email?: string;
+  } | null {
+    const token = this.store.read().tokens[id];
+    if (!token || token.revokedAt || isExpired(token)) {
+      return null;
+    }
+    return {
+      name: token.name,
+      role: token.role,
+      session: token.source === 'oidc' || token.source === 'totp',
+      ...(token.subject ? { subject: token.subject } : {}),
+      ...(token.email ? { email: token.email } : {}),
+    };
   }
 
   /**

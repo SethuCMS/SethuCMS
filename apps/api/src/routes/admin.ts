@@ -25,12 +25,17 @@ const OVERVIEW_OPEN_TIMEOUT_MS = 4000;
 export function registerAdminRoutes(s: Services): void {
   const { router } = s;
 
-  // Any signed-in role may ask who they are.
+  // Any signed-in role may ask who they are. `email` appears only for a sign-in
+  // session whose identity provider reported the address as verified; other
+  // systems may rely on it to recognise the person.
   router.add({
     method: 'GET',
     pattern: '/v1/me',
     auth: 'token',
-    handler: (ctx) => ({ status: 200, body: { data: ctx.principal } }),
+    handler: (ctx) => {
+      const email = s.auth.describe(ctx.principal.id)?.email;
+      return { status: 200, body: { data: { ...ctx.principal, ...(email ? { email } : {}) } } };
+    },
   });
 
   router.add({
