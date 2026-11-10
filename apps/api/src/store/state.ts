@@ -99,6 +99,11 @@ export interface StoredToken {
   source?: 'oidc' | 'totp';
   /** The identity provider's id (OIDC `sub`), or the person's id for 'totp'. */
   subject?: string;
+  /**
+   * The person's e-mail address, only when the identity provider reported it as
+   * verified. Lets other systems (for example a shop's staff list) recognise them.
+   */
+  email?: string;
 }
 
 /**

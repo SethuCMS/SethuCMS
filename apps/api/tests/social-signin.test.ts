@@ -116,6 +116,18 @@ describe('sign in through Firebase Authentication', () => {
     assert.equal(result.body.data.role, 'admin');
     const me = await gateway.call('GET', '/v1/me', { token: result.body.data.token });
     assert.equal(me.body.data.role, 'admin');
+    assert.equal(me.body.data.email, 'boss@example.com', '/v1/me reports the verified address');
+    const api = await gateway.call('GET', '/v1/me');
+    assert.equal(api.body.data.email, undefined, 'API tokens carry no e-mail');
+  });
+
+  it('does not report an e-mail the provider did not verify', async () => {
+    const result = await signIn(
+      firebase.token({ sub: 'uid-editor', email: 'someone@example.com', email_verified: false }),
+    );
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    const me = await gateway.call('GET', '/v1/me', { token: result.body.data.token });
+    assert.equal(me.body.data.email, undefined);
   });
 
   it('accepts a listed uid even without an e-mail (GitHub through Firebase)', async () => {

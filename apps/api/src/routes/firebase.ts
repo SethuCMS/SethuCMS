@@ -80,6 +80,8 @@ export function registerFirebaseRoutes(
           role,
           `firebase:${identity.uid}`,
           firebase.config.sessionHours,
+          'oidc',
+          identity.emailVerified ? identity.email : undefined,
         );
         s.audit.record({
           actor: session.id,
